@@ -14,4 +14,5 @@ print(llama(jnp.asarray(input_ids)[None, :]))
 
 with safe_open("/home/neverix/micrlhf/models/Llama-2-7b-hf/model-00001-of-00002.safetensors",
                framework="numpy", device="cpu") as f:
-    print(f.keys())
+    for k, v in f.items():
+        print(k, v.shape)
