@@ -168,7 +168,8 @@ class SelfAttention(eqx.Module):
         self._group_size = self.num_attention_heads // self.num_key_value_heads
         self.policy = policy
 
-        self.rotary_emb = RotaryEmbedding(hidden_size)
+        per_group_size = self.hidden_size // self._group_size
+        self.rotary_emb = RotaryEmbedding(per_group_size)
         q_proj_key, key = jax.random.split(key)
         k_proj_key, key = jax.random.split(key)
         v_proj_key, key = jax.random.split(key)
@@ -180,13 +181,13 @@ class SelfAttention(eqx.Module):
             (self.hidden_size, self.hidden_size), q_proj_key, qkv_sharding, policy
         )
         self.k_proj = Weight(
-            (self.hidden_size, self.hidden_size // self._group_size),
+            (self.hidden_size, per_group_size),
             k_proj_key,
             qkv_sharding,
             policy,
         )
         self.v_proj = Weight(
-            (self.hidden_size, self.hidden_size // self._group_size),
+            (self.hidden_size, per_group_size),
             v_proj_key,
             qkv_sharding,
             policy,
