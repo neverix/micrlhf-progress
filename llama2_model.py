@@ -3,6 +3,30 @@ from typing import List
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jmp
+from jax.sharding import Mesh, NamedSharding, Sharding, PartitionSpec
+
+
+class Weight(eqx.Module):
+    weight: jax.Array
+    policy: jmp.Policy
+
+    def __init__(
+        self,
+        shape,
+        key,
+        sharding: Sharding,
+        policy: jmp.Policy = jmp.get_policy("float32"),
+    ):
+        self.policy = policy
+        self.weight = jax.lax.with_sharding_constraint(
+            policy.cast_to_param(jax.random.normal(key, shape) / (shape[-1] ** 0.5)),
+            sharding,
+        )
+
+    def __call__(self, x):
+        x = self.policy.cast_to_compute(x)
+        return x @ self.weight
 
 
 class Embedding(eqx.Module):
@@ -17,7 +41,7 @@ class Embedding(eqx.Module):
         self.is_unembed = is_unembed
         self.weight = jax.random.normal(
             key, (self.vocab_size, self.hidden_size)[:: (-1 if is_unembed else 1)]
-        ) * ((1 / self.hidden_size) ** 0.5)
+        )
 
     def __call__(self, x):
         if self.is_unembed:
@@ -37,19 +61,26 @@ class LayerNorm(eqx.Module):
         self.weight = jax.random.normal(key, (self.hidden_size,))
 
     def __call__(self, x):
-        rms = jnp.square(x).mean(axis=-1, keepdims=True).sqrt()
-        return self.weight * x / (rms + self.rms_norm_eps)
+        orig_dtype = x.dtype
+        x = x.astype(jnp.float32)
+        rms = jnp.sqrt(jnp.square(x).mean(axis=-1, keepdims=True))
+        x = self.weight * x / (rms + self.rms_norm_eps)
+        return x.astype(orig_dtype)
 
 
 class MLP(eqx.Module):
     up_proj: jax.Array
     gate_proj: jax.Array
     down_proj: jax.Array
+    policy: jmp.Policy
 
     intermediate_size: int
     hidden_size: int
 
-    def __init__(self, hidden_size, intermediate_size, key):
+    def __init__(
+        self, hidden_size, intermediate_size, key, mesh: Mesh, policy: jmp.Policy
+    ):
+        self.policy = policy
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
 
@@ -57,33 +88,56 @@ class MLP(eqx.Module):
         gate_proj_key, key = jax.random.split(key)
         down_proj_key, key = jax.random.split(key)
 
-        self.up_proj = jax.random.normal(
-            up_proj_key, (self.hidden_size, self.intermediate_size)
-        ) / (self.hidden_size**0.5)
-        self.gate_proj = jax.random.normal(
-            gate_proj_key, (self.hidden_size, self.intermediate_size)
-        ) / (self.hidden_size**0.5)
-        self.down_proj = jax.random.normal(
-            down_proj_key, (self.intermediate_size, self.hidden_size)
-        ) / (self.intermediate_size**0.5)
+        up_sharding = NamedSharding(mesh, spec=PartitionSpec(None, "mp"))
+        down_sharding = NamedSharding(mesh, spec=PartitionSpec("mp", None))
+        self.up_proj = Weight(
+            (self.hidden_size, self.intermediate_size), up_proj_key, up_sharding, policy
+        )
+        self.gate_proj = Weight(
+            (self.hidden_size, self.intermediate_size),
+            gate_proj_key,
+            up_sharding,
+            policy,
+        )
+        self.down_proj = Weight(
+            (self.intermediate_size, self.hidden_size),
+            down_proj_key,
+            down_sharding,
+            policy,
+        )
 
     def __call__(self, x):
-        y = x @ self.gate_proj * jax.nn.sigmoid(x @ self.up_proj)
-        return x + y @ self.down_proj
+        x = self.policy.cast_to_compute(x)
+        y = self.gate_proj(x) * jax.nn.sigmoid(self.up_proj(x))
+        return x + self.down_proj(y)
 
 
 class RotaryEmbedding(eqx.Module):
     inv_freq: jax.Array
 
-    def __init__(self, hidden_size, key):
-        self.inv_freq = jax.lax.rsqrt(
-            10000 ** (2 * jnp.arange(hidden_size // 2) / hidden_size)
+    def __init__(self, hidden_size):
+        self.inv_freq = 1.0 / jax.lax.rsqrt(
+            10000 ** (jnp.arange(0, hidden_size, 2) / hidden_size)
         )
 
-    def __call__(self, x, axis=-2):
-        x = x[:, None, :] * self.inv_freq[None, :, None]
-        x = jnp.concatenate([jnp.sin(x), jnp.cos(x)], axis=-1)
-        return x
+    def __call__(self, x, seq_axis=-2, feature_axis=-1):
+        orig_dtype = x.dtype
+        x = x.astype(jnp.float32)
+
+        sequence = jnp.arange(x.shape[seq_axis])
+        angles = jnp.einsum("i,j->ij", sequence, self.inv_freq)
+        new_shape = [1] * len(x.shape)
+        new_shape[seq_axis] = x.shape[seq_axis]
+        new_shape[feature_axis] = x.shape[feature_axis] // 2
+        angles = angles.reshape(new_shape)
+        sins = jnp.sin(angles)
+        coss = jnp.cos(angles)
+        half, odd = jnp.split(x, 2, axis=feature_axis)
+        x = jnp.concatenate(
+            [half * coss - odd * sins, half * sins + odd * coss], axis=feature_axis
+        )
+
+        return x.astype(orig_dtype)
 
 
 class SelfAttention(eqx.Module):
@@ -91,6 +145,7 @@ class SelfAttention(eqx.Module):
     k_proj: jax.Array
     v_proj: jax.Array
     o_proj: jax.Array
+    policy: jmp.Policy
     rotary_emb: RotaryEmbedding
 
     hidden_size: int
@@ -98,41 +153,60 @@ class SelfAttention(eqx.Module):
     num_key_value_heads: int
     _group_size: int
 
-    def __init__(self, hidden_size, num_attention_heads, num_key_value_heads, key):
+    def __init__(
+        self,
+        hidden_size,
+        num_attention_heads,
+        num_key_value_heads,
+        key,
+        mesh: Mesh,
+        policy: jmp.Policy = jmp.get_policy("float32"),
+    ):
         self.hidden_size = hidden_size
         self.num_attention_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
         self._group_size = self.num_attention_heads // self.num_key_value_heads
+        self.policy = policy
 
-        self.rotary_emb = RotaryEmbedding(hidden_size, key)
+        self.rotary_emb = RotaryEmbedding(hidden_size)
         q_proj_key, key = jax.random.split(key)
         k_proj_key, key = jax.random.split(key)
         v_proj_key, key = jax.random.split(key)
         o_proj_key, key = jax.random.split(key)
 
-        self.q_proj = jax.random.normal(
-            q_proj_key, (self.hidden_size, self.hidden_size)
-        ) / (self.hidden_size**0.5)
-        self.k_proj = jax.random.normal(
-            k_proj_key, (self.hidden_size, self.hidden_size // self._group_size)
-        ) / (self.hidden_size**0.5)
-        self.v_proj = jax.random.normal(
-            v_proj_key, (self.hidden_size, self.hidden_size // self._group_size)
-        ) / (self.hidden_size**0.5)
-        self.o_proj = jax.random.normal(
-            o_proj_key, (self.hidden_size, self.hidden_size)
-        ) / (self.hidden_size**0.5)
+        qkv_sharding = NamedSharding(mesh, spec=PartitionSpec(None, "mp"))
+        o_sharding = NamedSharding(mesh, spec=PartitionSpec("mp", None))
+        self.q_proj = Weight(
+            (self.hidden_size, self.hidden_size), q_proj_key, qkv_sharding, policy
+        )
+        self.k_proj = Weight(
+            (self.hidden_size, self.hidden_size // self._group_size),
+            k_proj_key,
+            qkv_sharding,
+            policy,
+        )
+        self.v_proj = Weight(
+            (self.hidden_size, self.hidden_size // self._group_size),
+            v_proj_key,
+            qkv_sharding,
+            policy,
+        )
+        self.o_proj = Weight(
+            (self.hidden_size, self.hidden_size), o_proj_key, o_sharding, policy
+        )
 
     def __call__(self, x):
         # for now, regular attention
-        q = x @ self.q_proj
-        k = x @ self.k_proj
-        v = x @ self.v_proj
+        x = self.policy.cast_to_compute(x)
+
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
 
         q = q.reshape(
             q.shape[:-2] + (q.shape[1], self.num_key_value_heads, self._group_size, -1)
         )
-        q = self.rotary_emb(q, axis=-3)
+        q = self.rotary_emb(q, seq_axis=-4, feature_axis=-3)
         k = k.reshape(
             k.shape[:-2]
             + (
@@ -141,7 +215,7 @@ class SelfAttention(eqx.Module):
                 self.hidden_size // self.num_key_value_heads // self._group_size,
             )
         )
-        k = self.rotary_emb(k, axis=-3)
+        k = self.rotary_emb(k, seq_axis=-4, feature_axis=-3)
         v = k.reshape(
             v.shape[:-2]
             + (
@@ -154,7 +228,9 @@ class SelfAttention(eqx.Module):
         attention_matrix = jnp.einsum("...ahgd,...bhd->...abhg", q, k)
         attention_matrix = attention_matrix / (self.hidden_size**0.5)
         attention_matrix = jax.nn.softmax(attention_matrix, axis=-2)
-        o = jnp.einsum("...abhg,...bhd->...ahgd", attention_matrix, v) @ self.o_proj
+        o = jnp.einsum("...abhg,...bhd->...ahgd", attention_matrix, v)
+        o = o.reshape(o.shape[:-3] + (o.shape[-3] * o.shape[-2] * o.shape[-1],))
+        o = self.o_proj(o)
 
         return x + o
 
@@ -172,15 +248,22 @@ class LLaMALayer(eqx.Module):
         num_attention_heads,
         num_key_value_heads,
         key,
+        mesh: Mesh,
+        policy: jmp.Policy = jmp.get_policy("float32"),
     ):
         mlp_key, key = jax.random.split(key)
         attn_key, ln_key = jax.random.split(key)
         input_ln_key, post_ln_key = jax.random.split(ln_key)
 
         self.input_layernorm = LayerNorm(hidden_size, input_ln_key)
-        self.mlp = MLP(hidden_size, intermediate_size, mlp_key)
+        self.mlp = MLP(hidden_size, intermediate_size, mlp_key, mesh, policy)
         self.self_attn = SelfAttention(
-            hidden_size, num_attention_heads, num_key_value_heads, attn_key
+            hidden_size,
+            num_attention_heads,
+            num_key_value_heads,
+            attn_key,
+            mesh,
+            policy,
         )
         self.post_attention_layernorm = LayerNorm(hidden_size, post_ln_key)
 
@@ -192,6 +275,7 @@ class LLaMALayer(eqx.Module):
 
 
 class LLaMAModel(eqx.Module):
+    policy: jmp.Policy
     embed_tokens: Embedding
     hidden_size: int
     intermediate_size: int
@@ -206,11 +290,14 @@ class LLaMAModel(eqx.Module):
         num_attention_heads,
         num_key_value_heads,
         key,
+        mesh: Mesh,
+        policy: jmp.Policy = jmp.get_policy("float32"),
     ):
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.num_attention_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
+        self.policy = policy
 
         embed_key, key = jax.random.split(key)
         self.embed_tokens = Embedding(self.hidden_size, embed_key)
@@ -225,11 +312,14 @@ class LLaMAModel(eqx.Module):
                     self.num_attention_heads,
                     self.num_key_value_heads,
                     layer_key,
+                    mesh,
+                    policy,
                 )
             )
 
     def __call__(self, x):
         x = self.embed_tokens(x)
+        x = self.policy.cast_to_compute(x)
         for layer in self.layers:
             x = layer(x)
         return x
@@ -244,7 +334,7 @@ class LLaMA(eqx.Module):
     num_attention_heads: int = 32
     num_key_value_heads: int = 32
 
-    def __init__(self, key):
+    def __init__(self, key, mesh: Mesh, policy: jmp.Policy = jmp.get_policy("float32")):
         lm_head_key, key = jax.random.split(key)
         self.lm_head = Embedding(self.hidden_size, key=lm_head_key, is_unembed=True)
         self.model = LLaMAModel(
@@ -253,6 +343,8 @@ class LLaMA(eqx.Module):
             self.num_attention_heads,
             self.num_key_value_heads,
             key,
+            mesh,
+            policy,
         )
 
     def __call__(self, x):
