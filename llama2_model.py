@@ -180,6 +180,7 @@ class SelfAttention(eqx.Module):
         self.num_key_value_heads = num_key_value_heads
         assert self.num_attention_heads >= self.num_key_value_heads
         assert self.num_attention_heads % self.num_key_value_heads == 0
+        self._group_size = self.num_attention_heads // self.num_key_value_heads
         self.policy = policy
 
         self.rotary_emb = RotaryEmbedding(
@@ -201,10 +202,6 @@ class SelfAttention(eqx.Module):
             policy,
         )
         self.o_proj = Weight((self.hidden_size, self.hidden_size), o_sharding, policy)
-
-    @property
-    def _group_size(self):
-        return self.num_attention_heads // self.num_key_value_heads
 
     def __call__(self, x, attention_mask=None):
         # for now, regular attention
