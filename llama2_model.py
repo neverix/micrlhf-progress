@@ -32,23 +32,22 @@ class Weight(eqx.Module):
 class Embedding(eqx.Module):
     weight: jax.Array
 
-    vocab_size: int = 32_000
+    vocab_size: int
     hidden_size: int
-    is_unembed: bool
 
-    def __init__(self, hidden_size, mesh: Mesh, is_unembed=False):
+    def __init__(self, vocab_size, hidden_size, mesh: Mesh):
+        self.vocab_size = vocab_size
         self.hidden_size = hidden_size
-        self.is_unembed = is_unembed
-        self.weight = jax.device_put(jnp.empty(
-            (self.vocab_size, self.hidden_size)[:: (-1 if is_unembed else 1)],
-            dtype=jnp.float32,
-        ), NamedSharding(mesh, spec=PartitionSpec(None, None)))
+        self.weight = jax.device_put(
+            jnp.empty(
+                (self.vocab_size, self.hidden_size),
+                dtype=jnp.float32,
+            ),
+            NamedSharding(mesh, spec=PartitionSpec(None, None)),
+        )
 
     def __call__(self, x):
-        if self.is_unembed:
-            return x @ self.weight
-        else:
-            return self.weight[x]
+        return self.weight[x]
 
 
 class LayerNorm(eqx.Module):
@@ -59,8 +58,10 @@ class LayerNorm(eqx.Module):
 
     def __init__(self, hidden_size, mesh: Mesh):
         self.hidden_size = hidden_size
-        self.weight = jax.device_put(jnp.empty((self.hidden_size,), dtype=jnp.float32),
-                                        NamedSharding(mesh, spec=PartitionSpec(None)))
+        self.weight = jax.device_put(
+            jnp.empty((self.hidden_size,), dtype=jnp.float32),
+            NamedSharding(mesh, spec=PartitionSpec(None)),
+        )
 
     def __call__(self, x):
         orig_dtype = x.dtype
@@ -110,9 +111,10 @@ class RotaryEmbedding(eqx.Module):
     inv_freq: jax.Array
 
     def __init__(self, hidden_size, mesh: Mesh):
-        self.inv_freq = jax.device_put(1.0 / jax.lax.rsqrt(
-            10000 ** (jnp.arange(0, hidden_size, 2) / hidden_size)
-        ), NamedSharding(mesh, spec=PartitionSpec(None)))
+        self.inv_freq = jax.device_put(
+            1.0 / jax.lax.rsqrt(10000 ** (jnp.arange(0, hidden_size, 2) / hidden_size)),
+            NamedSharding(mesh, spec=PartitionSpec(None)),
+        )
 
     def __call__(self, x):
         orig_dtype = x.dtype
@@ -132,7 +134,7 @@ class RotaryEmbedding(eqx.Module):
 
 class Attention(eqx.Module):
     hidden_size: int
-    
+
     def __init__(self, hidden_size):
         self.hidden_size = hidden_size
 
@@ -176,12 +178,13 @@ class SelfAttention(eqx.Module):
         self.hidden_size = hidden_size
         self.num_attention_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
-        assert self.num_attention_heads > self.num_key_value_heads
+        assert self.num_attention_heads >= self.num_key_value_heads
         assert self.num_attention_heads % self.num_key_value_heads == 0
-        self._group_size = self.num_attention_heads // self.num_key_value_heads
         self.policy = policy
 
-        self.rotary_emb = RotaryEmbedding(self.hidden_size // self.num_attention_heads, mesh)
+        self.rotary_emb = RotaryEmbedding(
+            self.hidden_size // self.num_attention_heads, mesh
+        )
         self.attention = Attention(self.hidden_size // self.num_attention_heads)
 
         qkv_sharding = NamedSharding(mesh, spec=PartitionSpec(None, "mp"))
@@ -199,6 +202,10 @@ class SelfAttention(eqx.Module):
         )
         self.o_proj = Weight((self.hidden_size, self.hidden_size), o_sharding, policy)
 
+    @property
+    def _group_size(self):
+        return self.num_attention_heads // self.num_key_value_heads
+
     def __call__(self, x, attention_mask=None):
         # for now, regular attention
         x = self.policy.cast_to_compute(x)
@@ -208,26 +215,12 @@ class SelfAttention(eqx.Module):
         v = jax.vmap(self.v_proj)(x)
 
         remb_k = jax.vmap(self.rotary_emb, in_axes=-2, out_axes=-2)
-        remb_q = jax.vmap(
-            remb_k, in_axes=-2, out_axes=-2
-        )
+        remb_q = jax.vmap(remb_k, in_axes=-2, out_axes=-2)
         q = q.reshape(q.shape[:-1] + (self.num_key_value_heads, self._group_size, -1))
+        k = k.reshape(k.shape[:-1] + (self.num_key_value_heads, -1))
         q = remb_q(q)
-        k = k.reshape(
-            k.shape[:-1]
-            + (
-                self.num_key_value_heads,
-                -1
-            )
-        )
         k = remb_k(k)
-        v = v.reshape(
-            v.shape[:-1]
-            + (
-                self.num_key_value_heads,
-                -1
-            )
-        )
+        v = v.reshape(v.shape[:-1] + (self.num_key_value_heads, -1))
 
         o = self.attention(q, k, v, attention_mask=attention_mask)
         o = o.reshape(o.shape[:-3] + (-1,))
@@ -272,6 +265,7 @@ class LLaMAModel(eqx.Module):
     policy: jmp.Policy
     embed_tokens: Embedding
     norm: LayerNorm
+    vocab_size: int
     hidden_size: int
     intermediate_size: int
     num_attention_heads: int
@@ -281,6 +275,7 @@ class LLaMAModel(eqx.Module):
 
     def __init__(
         self,
+        vocab_size,
         hidden_size,
         intermediate_size,
         num_attention_heads,
@@ -289,13 +284,14 @@ class LLaMAModel(eqx.Module):
         mesh: Mesh,
         policy: jmp.Policy = jmp.get_policy("float32"),
     ):
+        self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.num_attention_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
         self.policy = policy
 
-        self.embed_tokens = Embedding(self.hidden_size, mesh)
+        self.embed_tokens = Embedding(self.vocab_size, self.hidden_size, mesh)
 
         self.layers = []
         self.num_layers = num_layers
@@ -327,14 +323,16 @@ class LLaMA(eqx.Module):
     lm_head: Embedding
     model: LLaMAModel
 
+    vocab_size: int = 32_000
     hidden_size: int = 4096
     intermediate_size: int = 11008
     num_attention_heads: int = 32
-    num_key_value_heads: int = 16
+    num_key_value_heads: int = 32
     num_layers: int = 32
 
     def __init__(self, mesh: Mesh, policy: jmp.Policy = jmp.get_policy("float32")):
         self.model = LLaMAModel(
+            self.vocab_size,
             self.hidden_size,
             self.intermediate_size,
             self.num_attention_heads,
@@ -343,7 +341,11 @@ class LLaMA(eqx.Module):
             mesh,
             policy,
         )
-        self.lm_head = Embedding(self.hidden_size, mesh, is_unembed=True)
+        self.lm_head = Weight(
+            (self.hidden_size, self.vocab_size),
+            NamedSharding(mesh, spec=PartitionSpec(None, None)),
+            policy,
+        )
 
     def __call__(self, x):
         return jax.vmap(self.lm_head)(self.model(x))
