@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import jmp
 from jax.sharding import Mesh, NamedSharding, Sharding, PartitionSpec
-from jax.debug import print as jdp
+from jax.debug import print as jdp  # heh
 
 
 class Weight(eqx.Module):
@@ -68,7 +68,9 @@ class LayerNorm(eqx.Module):
         x = x.astype(jnp.float32)
         rms = jnp.sqrt(jnp.square(x).mean(axis=-1, keepdims=True))
         x = self.weight * x / (rms + self.rms_norm_eps)
-        return x.astype(orig_dtype)
+        x = x.astype(orig_dtype)
+        print(type(x))
+        return x
 
 
 class MLP(eqx.Module):
@@ -253,8 +255,11 @@ class LLaMALayer(eqx.Module):
         self.post_attention_layernorm = LayerNorm(hidden_size, mesh)
 
     def __call__(self, x):
-        x = x + self.self_attn(jax.vmap(self.input_layernorm)(x))
-        x = x + jax.vmap(self.mlp)(jax.vmap(self.post_attention_layernorm)(x))
+        y = jax.vmap(self.input_layernorm)(x)
+        print(type(y))
+        x = x + self.self_attn(y)
+        y = jax.vmap(self.post_attention_layernorm)(x)
+        x = x + jax.vmap(self.mlp)(y)
         return x
 
 
@@ -345,4 +350,5 @@ class LLaMA(eqx.Module):
         )
 
     def __call__(self, x):
-        return jax.vmap(self.lm_head)(self.model(x))
+        embeds = self.model(x)
+        return jax.vmap(self.lm_head)(embeds)
