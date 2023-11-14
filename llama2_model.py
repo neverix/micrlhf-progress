@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import jmp
 from jax.sharding import Mesh, NamedSharding, Sharding, PartitionSpec
-from jax.debug import print as jdp  # heh
+from state_util import dummy_stateful
 
 
 class Weight(eqx.Module):
@@ -24,6 +24,7 @@ class Weight(eqx.Module):
             sharding,
         )
 
+    @dummy_stateful
     def __call__(self, x):
         x = self.policy.cast_to_compute(x)
         return x @ self.weight
@@ -46,6 +47,7 @@ class Embedding(eqx.Module):
             NamedSharding(mesh, spec=PartitionSpec(None, None)),
         )
 
+    @dummy_stateful
     def __call__(self, x):
         return self.weight[x]
 
@@ -63,13 +65,13 @@ class LayerNorm(eqx.Module):
             NamedSharding(mesh, spec=PartitionSpec(None)),
         )
 
+    @dummy_stateful
     def __call__(self, x):
         orig_dtype = x.dtype
         x = x.astype(jnp.float32)
         rms = jnp.sqrt(jnp.square(x).mean(axis=-1, keepdims=True))
         x = self.weight * x / (rms + self.rms_norm_eps)
         x = x.astype(orig_dtype)
-        print(type(x))
         return x
 
 
@@ -103,10 +105,12 @@ class MLP(eqx.Module):
             policy,
         )
 
-    def __call__(self, x):
+    def __call__(self, x, state):
         x = self.policy.cast_to_compute(x)
-        x = self.gate_proj(x) * jax.nn.sigmoid(self.up_proj(x))
-        return self.down_proj(x)
+        gate, state = self.gate_proj(x, state)
+        up, state = self.up_proj(x, state)
+        x = gate * jax.nn.sigmoid(up)
+        return self.down_proj(x), state
 
 
 class RotaryEmbedding(eqx.Module):
@@ -118,6 +122,7 @@ class RotaryEmbedding(eqx.Module):
             NamedSharding(mesh, spec=PartitionSpec(None)),
         )
 
+    @dummy_stateful
     def __call__(self, x):
         orig_dtype = x.dtype
         x = x.astype(jnp.float32)
@@ -140,6 +145,7 @@ class Attention(eqx.Module):
     def __init__(self, hidden_size):
         self.hidden_size = hidden_size
 
+    @dummy_stateful
     def __call__(self, q, k, v, attention_mask=None):
         attention_matrix = jnp.einsum("...ahgd,...bhd->...abhg", q, k)
         attention_matrix = attention_matrix / (self.hidden_size**0.5)
@@ -205,27 +211,27 @@ class SelfAttention(eqx.Module):
         )
         self.o_proj = Weight((self.hidden_size, self.hidden_size), o_sharding, policy)
 
-    def __call__(self, x, attention_mask=None):
+    def __call__(self, x, state: eqx.nn.State, attention_mask=None):
         # for now, regular attention
         x = self.policy.cast_to_compute(x)
 
-        q = jax.vmap(self.q_proj)(x)
-        k = jax.vmap(self.k_proj)(x)
-        v = jax.vmap(self.v_proj)(x)
+        q, state = jax.vmap(self.q_proj)(x, state)
+        k, state = jax.vmap(self.k_proj)(x, state)
+        v, state = jax.vmap(self.v_proj)(x, state)
 
         remb_k = jax.vmap(self.rotary_emb, in_axes=-2, out_axes=-2)
         remb_q = jax.vmap(remb_k, in_axes=-2, out_axes=-2)
         q = q.reshape(q.shape[:-1] + (self.num_key_value_heads, self._group_size, -1))
         k = k.reshape(k.shape[:-1] + (self.num_key_value_heads, -1))
-        q = remb_q(q)
-        k = remb_k(k)
-        v = v.reshape(v.shape[:-1] + (self.num_key_value_heads, -1))
+        q, state = remb_q(q, state)
+        k, state = remb_k(k, state)
+        v, state = v.reshape(v.shape[:-1] + (self.num_key_value_heads, -1))
 
-        o = self.attention(q, k, v, attention_mask=attention_mask)
+        o, state = self.attention(q, k, v, state, attention_mask=attention_mask)
         o = o.reshape(o.shape[:-3] + (-1,))
-        o = self.o_proj(o)
+        o, state = self.o_proj(o, state)
 
-        return o
+        return o, state
 
 
 class LLaMALayer(eqx.Module):
@@ -254,13 +260,14 @@ class LLaMALayer(eqx.Module):
         )
         self.post_attention_layernorm = LayerNorm(hidden_size, mesh)
 
-    def __call__(self, x):
-        y = jax.vmap(self.input_layernorm)(x)
-        print(type(y))
-        x = x + self.self_attn(y)
-        y = jax.vmap(self.post_attention_layernorm)(x)
-        x = x + jax.vmap(self.mlp)(y)
-        return x
+    def __call__(self, x, state: eqx.nn.State):
+        y, state = jax.vmap(self.input_layernorm)(x, state)
+        y, state = self.self_attn(y, state)
+        x = x + y
+        y, state = jax.vmap(self.post_attention_layernorm)(x, state)
+        y, state = jax.vmap(self.mlp)(y, state)
+        x = x + y
+        return x, state
 
 
 class LLaMAModel(eqx.Module):
@@ -311,14 +318,14 @@ class LLaMAModel(eqx.Module):
 
         self.norm = LayerNorm(self.hidden_size, mesh)
 
-    def __call__(self, x):
-        x = jax.vmap(self.embed_tokens)(x)
-        x = self.policy.cast_to_compute(x)
+    def __call__(self, x, state: eqx.nn.State):
+        x = jax.vmap(self.embed_tokens)(x, state)
+        x = self.policy.cast_to_compute(x, state)
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, state)
         # x = jax.lax.scan(lambda carry, layer: layer(carry), x, self.layers)[0]
-        x = jax.vmap(self.norm)(x)
-        return x
+        x = jax.vmap(self.norm)(x, state)
+        return x, state
 
 
 class LLaMA(eqx.Module):
@@ -349,6 +356,6 @@ class LLaMA(eqx.Module):
             policy,
         )
 
-    def __call__(self, x):
-        embeds = self.model(x)
-        return jax.vmap(self.lm_head)(embeds)
+    def __call__(self, x, state: eqx.nn.State):
+        embeds, state = self.model(x, state)
+        return jax.vmap(self.lm_head)(embeds, state)
