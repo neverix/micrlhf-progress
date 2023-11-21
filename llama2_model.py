@@ -29,6 +29,10 @@ class Weight(eqx.Module):
         x = self.policy.cast_to_compute(x)
         return x @ self.weight
 
+    @property
+    def out_shape(self):
+        return (self.weight.shape[1],)
+
 
 class Embedding(eqx.Module):
     weight: jax.Array
@@ -319,12 +323,12 @@ class LLaMAModel(eqx.Module):
         self.norm = LayerNorm(self.hidden_size, mesh)
 
     def __call__(self, x, state: eqx.nn.State):
-        x = jax.vmap(self.embed_tokens)(x, state)
+        x = jax.vmap(self.embed_tokens, in_axes=(0, None), out_axes=(0, None))(x, state)
         x = self.policy.cast_to_compute(x, state)
         for layer in self.layers:
             x = layer(x, state)
         # x = jax.lax.scan(lambda carry, layer: layer(carry), x, self.layers)[0]
-        x = jax.vmap(self.norm)(x, state)
+        x = jax.vmap(self.norm, in_axes=(0, None))(x, state)
         return x, state
 
 
@@ -358,4 +362,4 @@ class LLaMA(eqx.Module):
 
     def __call__(self, x, state: eqx.nn.State):
         embeds, state = self.model(x, state)
-        return jax.vmap(self.lm_head)(embeds, state)
+        return jax.vmap(self.lm_head, in_axes=(0, None))(embeds, state)
