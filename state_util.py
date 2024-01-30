@@ -21,24 +21,22 @@ def dummy_caching(fun):
         else:
             result = (result, cache)
         return result
-
     return fun_
 
 
-def save_caching(name):
-    def decorator(fun):
-        def fun_(*args, **kwargs):
-            args, kwargs, cache = extract_arg(args, kwargs, "cache")
-            result = fun(*args, **kwargs)
-            cache = {  }
-            if isinstance(result, tuple):
-                result = result + (cache,)
-            else:
-                result = (result, cache)
-            return result
-
-        return fun_
-    return decorator
+def save_caching(fun):
+    def fun_(*args, **kwargs):
+        self = args[0]
+        name = self.name
+        args, kwargs, cache = extract_arg(args, kwargs, "cache")
+        result = fun(*args, **kwargs)
+        cache = {**cache, name: result}
+        if isinstance(result, tuple):
+            result = result + (cache,)
+        else:
+            result = (result, cache)
+        return result
+    return fun_
 
 
 def dummy_stateful(fun):
