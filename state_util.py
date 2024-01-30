@@ -2,13 +2,13 @@ from equinox.nn import State, StateIndex, make_with_state
 import jax
 
 
-def extract_arg(args, kwargs, arg_name):
+def extract_arg(args, kwargs, arg_name, index: int = -1):
     if arg_name in kwargs:
         state = kwargs[arg_name]
         kwargs = {k: v for k, v in kwargs.items() if k != arg_name}
     else:
-        state = args[-1]
-        args = args[:-1]
+        state = args[index]
+        args = args[:index] + args[index + 1:]
     return args, kwargs, state
 
 
@@ -16,21 +16,6 @@ def dummy_caching(fun):
     def fun_(*args, **kwargs):
         args, kwargs, cache = extract_arg(args, kwargs, "cache")
         result = fun(*args, **kwargs)
-        if isinstance(result, tuple):
-            result = result + (cache,)
-        else:
-            result = (result, cache)
-        return result
-    return fun_
-
-
-def save_caching(fun):
-    def fun_(*args, **kwargs):
-        self = args[0]
-        name = self.name
-        args, kwargs, cache = extract_arg(args, kwargs, "cache")
-        result = fun(*args, **kwargs)
-        cache = {**cache, name: result}
         if isinstance(result, tuple):
             result = result + (cache,)
         else:

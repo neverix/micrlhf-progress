@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import jmp
 from jax.sharding import Mesh, NamedSharding, Sharding, PartitionSpec
-from state_util import dummy_stateful, dummy_caching, save_caching
+from state_util import dummy_stateful, dummy_caching
 
 
 class Weight(eqx.Module):
@@ -18,8 +18,7 @@ class Weight(eqx.Module):
         self,
         shape,
         sharding: Sharding,
-        policy: jmp.Policy = jmp.get_policy("float32"),
-        prefix: str = ""
+        policy: jmp.Policy = jmp.get_policy("float32")
     ):
         self.policy = policy
         self.weight = jax.device_put(
@@ -27,9 +26,9 @@ class Weight(eqx.Module):
             sharding,
         )
         self.out_shape = (self.weight.shape[1],)
-        self.name = prefix
 
-    @save_caching
+    @dummy_caching
+    @dummy_stateful
     def __call__(self, x):
         x = self.policy.cast_to_compute(x)
         return x @ self.weight
@@ -44,7 +43,7 @@ class Embedding(eqx.Module):
     out_shape: Tuple[int]
     name: str
 
-    def __init__(self, vocab_size, hidden_size, mesh: Mesh, prefix: str = ""):
+    def __init__(self, vocab_size, hidden_size, mesh: Mesh):
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.weight = jax.device_put(
@@ -56,9 +55,9 @@ class Embedding(eqx.Module):
         )
         
         self.out_shape = (self.hidden_size,)
-        self.name = prefix
 
-    @save_caching
+    @dummy_caching
+    @dummy_stateful
     def __call__(self, x):
         return self.weight[x]
 
@@ -72,7 +71,7 @@ class LayerNorm(eqx.Module):
     out_shape: Tuple[int]
     name: str
 
-    def __init__(self, hidden_size, mesh: Mesh, prefix: str = ""):
+    def __init__(self, hidden_size, mesh: Mesh):
         self.hidden_size = hidden_size
         self.weight = jax.device_put(
             jnp.empty((self.hidden_size,), dtype=jnp.float32),
@@ -80,9 +79,8 @@ class LayerNorm(eqx.Module):
         )
         
         self.out_shape = (self.hidden_size,)
-        self.name = prefix
 
-    @save_caching
+    @dummy_caching
     @dummy_stateful
     def __call__(self, x):
         orig_dtype = x.dtype
@@ -105,7 +103,7 @@ class MLP(eqx.Module):
     out_shape: Tuple[int]
     name: str
 
-    def __init__(self, hidden_size, intermediate_size, mesh: Mesh, policy: jmp.Policy, prefix: str = ""):
+    def __init__(self, hidden_size, intermediate_size, mesh: Mesh, policy: jmp.Policy):
         self.policy = policy
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
@@ -114,23 +112,19 @@ class MLP(eqx.Module):
         down_sharding = NamedSharding(mesh, spec=PartitionSpec("mp", None))
         self.up_proj = Weight(
             (self.hidden_size, self.intermediate_size), up_sharding, policy,
-            prefix = prefix + ".up_proj"
         )
         self.gate_proj = Weight(
             (self.hidden_size, self.intermediate_size),
             up_sharding,
             policy,
-            prefix=prefix + ".gate_proj"
         )
         self.down_proj = Weight(
             (self.intermediate_size, self.hidden_size),
             down_sharding,
             policy,
-            prefix=prefix + ".down_proj"
         )
         
         self.out_shape = (self.hidden_size,)
-        self.name = prefix + ".mlp"
 
     def __call__(self, x, state, cache):
         x = self.policy.cast_to_compute(x)
@@ -138,7 +132,6 @@ class MLP(eqx.Module):
         up, state = self.up_proj(x, state, cache)
         x = gate * jax.nn.sigmoid(up)
         x = self.down_proj(x)
-        cache = {**cache, self.name: x}
         return x, state, cache
 
 
@@ -148,16 +141,16 @@ class RotaryEmbedding(eqx.Module):
     out_shape: Tuple[int]
     name: str
 
-    def __init__(self, hidden_size, mesh: Mesh, prefix: str = ""):
+    def __init__(self, hidden_size, mesh: Mesh):
         self.inv_freq = jax.device_put(
             1.0 / jax.lax.rsqrt(10000 ** (jnp.arange(0, hidden_size, 2) / hidden_size)),
             NamedSharding(mesh, spec=PartitionSpec(None)),
         )
         
         self.out_shape = (hidden_size,)
-        self.name = prefix
 
-    @save_caching
+    @dummy_caching
+    @dummy_stateful
     def __call__(self, x):
         orig_dtype = x.dtype
         x = x.astype(jnp.float32)
@@ -179,12 +172,11 @@ class Attention(eqx.Module):
     out_shape: Tuple[int]
     name: str
 
-    def __init__(self, hidden_size, prefix: str = ""):
+    def __init__(self, hidden_size):
         self.hidden_size = hidden_size
         self.out_shape = (self.hidden_size,)
-        self.name = prefix
 
-    @save_caching
+    @dummy_caching
     @dummy_stateful
     def __call__(self, q, k, v, attention_mask=None):
         attention_matrix = jnp.einsum("...ahgd,...bhd->...abhg", q, k)
@@ -225,7 +217,6 @@ class SelfAttention(eqx.Module):
         num_key_value_heads,
         mesh: Mesh,
         policy: jmp.Policy = jmp.get_policy("float32"),
-        prefix: str = "",
     ):
         self.hidden_size = hidden_size
         self.num_attention_heads = num_attention_heads
@@ -236,28 +227,25 @@ class SelfAttention(eqx.Module):
         self.policy = policy
 
         self.rotary_emb = RotaryEmbedding(
-            self.hidden_size // self.num_attention_heads, mesh, prefix=prefix + ".rotary_emb"
+            self.hidden_size // self.num_attention_heads, mesh,
         )
         self.attention = Attention(self.hidden_size // self.num_attention_heads)
 
         qkv_sharding = NamedSharding(mesh, spec=PartitionSpec(None, "mp"))
         o_sharding = NamedSharding(mesh, spec=PartitionSpec("mp", None))
-        self.q_proj = Weight((self.hidden_size, self.hidden_size), qkv_sharding, policy, prefix=prefix + ".q_proj")
+        self.q_proj = Weight((self.hidden_size, self.hidden_size), qkv_sharding, policy,)
         self.k_proj = Weight(
             (self.hidden_size, self.hidden_size // self._group_size),
             qkv_sharding,
             policy,
-            prefix=prefix + ".k_proj"
         )
         self.v_proj = Weight(
             (self.hidden_size, self.hidden_size // self._group_size),
             qkv_sharding,
             policy,
-            prefix=prefix + ".v_proj"
         )
-        self.o_proj = Weight((self.hidden_size, self.hidden_size), o_sharding, policy, prefix=prefix + ".o_proj")
+        self.o_proj = Weight((self.hidden_size, self.hidden_size), o_sharding, policy,)
         self.out_shape = (self.hidden_size,)
-        self.name = prefix
 
     def __call__(self, x, state: eqx.nn.State, cache: dict, attention_mask=None):
         # for now, regular attention
@@ -279,7 +267,6 @@ class SelfAttention(eqx.Module):
         o = o.reshape(o.shape[:-3] + (-1,))
         o, state, cache = self.o_proj(o, state, cache)
 
-        cache = {**cache, self.name: o}
         return o, state, cache
 
 
@@ -300,21 +287,18 @@ class LLaMALayer(eqx.Module):
         num_key_value_heads,
         mesh: Mesh,
         policy: jmp.Policy = jmp.get_policy("float32"),
-        prefix: str = "",
     ):
         self.input_layernorm = LayerNorm(hidden_size, mesh)
-        self.mlp = MLP(hidden_size, intermediate_size, mesh, policy, prefix=prefix + ".mlp")
+        self.mlp = MLP(hidden_size, intermediate_size, mesh, policy,)
         self.self_attn = SelfAttention(
             hidden_size,
             num_attention_heads,
             num_key_value_heads,
             mesh,
             policy,
-            prefix=prefix + ".self_attn"
         )
         self.post_attention_layernorm = LayerNorm(hidden_size, mesh)
         self.out_shape = (hidden_size,)
-        self.name = prefix
 
     def __call__(self, x, state: eqx.nn.State, cache: dict):
         y, state, cache = jax.vmap(self.input_layernorm)(x, state, cache)
@@ -323,7 +307,6 @@ class LLaMALayer(eqx.Module):
         y, state, cache = jax.vmap(self.post_attention_layernorm)(x, state, cache)
         y, state, cache = jax.vmap(self.mlp)(y, state, cache)
         x = x + y
-        cache = {**cache, self.name: x}
         return x, state, cache
 
 
@@ -352,7 +335,6 @@ class LLaMAModel(eqx.Module):
         num_layers,
         mesh: Mesh,
         policy: jmp.Policy = jmp.get_policy("float32"),
-        prefix: str = "",
     ):
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
@@ -374,23 +356,20 @@ class LLaMAModel(eqx.Module):
                     self.num_key_value_heads,
                     mesh,
                     policy,
-                    prefix=prefix + f".layers.{i}"
                 )
             )
 
-        self.norm = LayerNorm(self.hidden_size, mesh, prefix=prefix + ".norm")
+        self.norm = LayerNorm(self.hidden_size, mesh,)
         
         self.out_shape = (self.hidden_size,)
-        self.name = prefix
 
     def __call__(self, x, state: eqx.nn.State, cache: dict):
-        x, cache = jax.vmap(self.embed_tokens, in_axes=(0, 0), out_axes=(0, None, 0))(x, cache)
+        x, state, cache = jax.vmap(self.embed_tokens, in_axes=(0, None, 0), out_axes=(0, None, 0))(x, state, cache)
         x, state, cache = self.policy.cast_to_compute(x, state, cache)
         for layer in self.layers:
             x, state, cache = layer(x, state, cache)
         # x = jax.lax.scan(lambda carry, layer: layer(carry), x, self.layers)[0]
-        x = jax.vmap(self.norm, in_axes=(0, None, 0), out_axes=(0, None, 0))(x, state, cache)
-        cache = {**cache, self.name: x}
+        x, state, cache = jax.vmap(self.norm, in_axes=(0, None, 0), out_axes=(0, None, 0))(x, state, cache)
         return x, state, cache
 
 
@@ -408,7 +387,7 @@ class LLaMA(eqx.Module):
     out_shape: Tuple[int]
     name: str
 
-    def __init__(self, mesh: Mesh, policy: jmp.Policy = jmp.get_policy("float32"), prefix: str = "llama"):
+    def __init__(self, mesh: Mesh, policy: jmp.Policy = jmp.get_policy("float32"),):
         self.model = LLaMAModel(
             self.vocab_size,
             self.hidden_size,
@@ -418,16 +397,13 @@ class LLaMA(eqx.Module):
             self.num_layers,
             mesh,
             policy,
-            prefix=prefix + ".model"
         )
         self.lm_head = Weight(
             (self.hidden_size, self.vocab_size),
             NamedSharding(mesh, spec=PartitionSpec(None, None)),
             policy,
-            prefix=prefix + ".lm_head"
         )
         self.out_shape = (self.vocab_size,)
-        self.name = prefix
 
     def __call__(self, x, state: eqx.nn.State, cache: dict):
         embeds, state, dict = self.model(x, state, cache)
