@@ -8,6 +8,27 @@ from jax.sharding import Mesh, NamedSharding, Sharding, PartitionSpec
 from state_util import dummy_stateful, dummy_caching
 
 
+class ModuleList(eqx.Module):
+    modules: List[eqx.Module]
+    
+    out_shape: Tuple[int]
+
+    def __init__(self, modules: List[eqx.Module]):
+        self.modules = modules
+        self.out_shape = (self.modules[-1].out_shape[0],)
+
+    def __call__(self, *args, **kwargs):
+        for module in self.modules:
+            args, kwargs = module(*args, **kwargs)
+        return args, kwargs
+    
+    def __getitem__(self, key):
+        return self.modules[key]
+    
+    def __iter__(self):
+        return iter(self.modules)
+
+
 class Weight(eqx.Module):
     weight: jax.Array
     policy: jmp.Policy
@@ -339,10 +360,10 @@ class LLaMAModel(eqx.Module):
 
         self.embed_tokens = Embedding(self.vocab_size, self.hidden_size, mesh)
 
-        self.layers = []
+        layers = []
         self.num_layers = num_layers
         for i in range(self.num_layers):
-            self.layers.append(
+            layers.append(
                 LLaMALayer(
                     self.hidden_size,
                     self.intermediate_size,
@@ -352,6 +373,7 @@ class LLaMAModel(eqx.Module):
                     policy,
                 )
             )
+        self.layers = ModuleList(layers)
 
         self.norm = LayerNorm(self.hidden_size, mesh,)
         
