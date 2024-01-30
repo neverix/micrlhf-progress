@@ -8,13 +8,13 @@ def extract_arg(args, kwargs, arg_name, index: int = -1):
         kwargs = {k: v for k, v in kwargs.items() if k != arg_name}
     else:
         state = args[index]
-        args = args[:index] + args[index + 1:]
+        args = args[:index] + (args[index + 1:] if index != -1 else tuple())
     return args, kwargs, state
 
 
 def dummy_caching(fun):
     def fun_(*args, **kwargs):
-        args, kwargs, cache = extract_arg(args, kwargs, "cache")
+        args, kwargs, cache = extract_arg(args, kwargs, "cache", -1)
         result = fun(*args, **kwargs)
         if isinstance(result, tuple):
             result = result + (cache,)
@@ -26,10 +26,11 @@ def dummy_caching(fun):
 
 def dummy_stateful(fun):
     def fun_(*args, **kwargs):
-        args, kwargs, state = extract_arg(args, kwargs, "state")
+        index = -1
+        args, kwargs, state = extract_arg(args, kwargs, "state", index)
         result = fun(*args, **kwargs)
         if isinstance(result, tuple):
-            result = result + (state,)
+            result = result[:index] + (state,) + result[index:]
         else:
             result = (result, state)
         return result

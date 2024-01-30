@@ -12,7 +12,6 @@ class Weight(eqx.Module):
     weight: jax.Array
     policy: jmp.Policy
     out_shape: Tuple[int]
-    name: str
 
     def __init__(
         self,
@@ -41,7 +40,6 @@ class Embedding(eqx.Module):
     hidden_size: int
     
     out_shape: Tuple[int]
-    name: str
 
     def __init__(self, vocab_size, hidden_size, mesh: Mesh):
         self.vocab_size = vocab_size
@@ -69,7 +67,6 @@ class LayerNorm(eqx.Module):
     rms_norm_eps: float = 1e-5
     
     out_shape: Tuple[int]
-    name: str
 
     def __init__(self, hidden_size, mesh: Mesh):
         self.hidden_size = hidden_size
@@ -101,7 +98,6 @@ class MLP(eqx.Module):
     hidden_size: int
     
     out_shape: Tuple[int]
-    name: str
 
     def __init__(self, hidden_size, intermediate_size, mesh: Mesh, policy: jmp.Policy):
         self.policy = policy
@@ -139,7 +135,6 @@ class RotaryEmbedding(eqx.Module):
     inv_freq: jax.Array
     
     out_shape: Tuple[int]
-    name: str
 
     def __init__(self, hidden_size, mesh: Mesh):
         self.inv_freq = jax.device_put(
@@ -170,7 +165,6 @@ class RotaryEmbedding(eqx.Module):
 class Attention(eqx.Module):
     hidden_size: int
     out_shape: Tuple[int]
-    name: str
 
     def __init__(self, hidden_size):
         self.hidden_size = hidden_size
@@ -208,7 +202,6 @@ class SelfAttention(eqx.Module):
     _group_size: int
     
     out_shape: Tuple[int]
-    name: str
 
     def __init__(
         self,
@@ -255,12 +248,14 @@ class SelfAttention(eqx.Module):
         k, state, cache = jax.vmap(self.k_proj)(x, state, cache)
         v, state, cache = jax.vmap(self.v_proj)(x, state, cache)
 
-        remb_k = jax.vmap(self.rotary_emb, in_axes=-2, out_axes=-2)
-        remb_q = jax.vmap(remb_k, in_axes=-2, out_axes=-2)
+        remb = jax.vmap(self.rotary_emb, in_axes=(-2, None, -2), out_axes=(-2, None, -2))
         q = q.reshape(q.shape[:-1] + (self.num_key_value_heads, self._group_size, -1))
         k = k.reshape(k.shape[:-1] + (self.num_key_value_heads, -1))
-        q, state, cache = remb_q(q, state, cache)
-        k, state, cache = remb_k(k, state, cache)
+        # vmap will try to split the cache
+        q, state, cache_ = remb(q, state, {})
+        cache = {**cache, **cache_}
+        k, state, cache_ = remb(k, state, {})
+        cache = {**cache, **cache_}
         v, state, cache = v.reshape(v.shape[:-1] + (self.num_key_value_heads, -1))
 
         o, state, cache = self.attention(q, k, v, state, cache, attention_mask=attention_mask)
@@ -277,7 +272,6 @@ class LLaMALayer(eqx.Module):
     post_attention_layernorm: LayerNorm
     
     out_shape: Tuple[int]
-    name: str
 
     def __init__(
         self,
@@ -323,7 +317,6 @@ class LLaMAModel(eqx.Module):
     layers: List[LLaMALayer]
     
     out_shape: Tuple[int]
-    name: str
 
     def __init__(
         self,
@@ -365,7 +358,7 @@ class LLaMAModel(eqx.Module):
 
     def __call__(self, x, state: eqx.nn.State, cache: dict):
         x, state, cache = jax.vmap(self.embed_tokens, in_axes=(0, None, 0), out_axes=(0, None, 0))(x, state, cache)
-        x, state, cache = self.policy.cast_to_compute(x, state, cache)
+        x = self.policy.cast_to_compute(x)
         for layer in self.layers:
             x, state, cache = layer(x, state, cache)
         # x = jax.lax.scan(lambda carry, layer: layer(carry), x, self.layers)[0]
@@ -374,6 +367,7 @@ class LLaMAModel(eqx.Module):
 
 
 class LLaMA(eqx.Module):
+    policy: jmp.Policy
     lm_head: Embedding
     model: LLaMAModel
 
@@ -385,7 +379,6 @@ class LLaMA(eqx.Module):
     num_layers: int = 32
     
     out_shape: Tuple[int]
-    name: str
 
     def __init__(self, mesh: Mesh, policy: jmp.Policy = jmp.get_policy("float32"),):
         self.model = LLaMAModel(
@@ -396,15 +389,16 @@ class LLaMA(eqx.Module):
             self.num_key_value_heads,
             self.num_layers,
             mesh,
-            policy,
+            policy=policy,
         )
         self.lm_head = Weight(
             (self.hidden_size, self.vocab_size),
             NamedSharding(mesh, spec=PartitionSpec(None, None)),
-            policy,
+            policy=policy,
         )
+        self.policy = policy
         self.out_shape = (self.vocab_size,)
 
     def __call__(self, x, state: eqx.nn.State, cache: dict):
-        embeds, state, dict = self.model(x, state, cache)
+        embeds, state, cache = self.model(x, state, cache)
         return jax.vmap(self.lm_head, in_axes=(0, None, 0))(embeds, state, cache)
