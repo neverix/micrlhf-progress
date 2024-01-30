@@ -124,10 +124,10 @@ class MLP(eqx.Module):
 
     def __call__(self, x, state, cache):
         x = self.policy.cast_to_compute(x)
-        gate, state = self.gate_proj(x, state, cache)
-        up, state = self.up_proj(x, state, cache)
+        gate, state, cache = self.gate_proj(x, state, cache)
+        up, state, cache = self.up_proj(x, state, cache)
         x = gate * jax.nn.sigmoid(up)
-        x = self.down_proj(x)
+        x, state, cache = self.down_proj(x, state, cache)
         return x, state, cache
 
 
@@ -154,7 +154,7 @@ class RotaryEmbedding(eqx.Module):
         angles = jnp.einsum("i,j->ij", sequence, jax.lax.stop_gradient(self.inv_freq))
         sins = jnp.sin(angles)
         coss = jnp.cos(angles)
-        half, odd = jnp.split(x, 2, axis=1)
+        half, odd = jnp.split(x, 2, axis=-1)
         x = jnp.concatenate(
             [half * coss + odd * sins, half * sins - odd * coss], axis=1
         )
@@ -248,15 +248,16 @@ class SelfAttention(eqx.Module):
         k, state, cache = jax.vmap(self.k_proj)(x, state, cache)
         v, state, cache = jax.vmap(self.v_proj)(x, state, cache)
 
-        remb = jax.vmap(self.rotary_emb, in_axes=(-2, None, -2), out_axes=(-2, None, -2))
+        remb_k = jax.vmap(self.rotary_emb, in_axes=(-2, None, -2), out_axes=(-2, None, -2))
+        remb_q = jax.vmap(remb_k, in_axes=(-2, None, -2), out_axes=(-2, None, -2))
         q = q.reshape(q.shape[:-1] + (self.num_key_value_heads, self._group_size, -1))
         k = k.reshape(k.shape[:-1] + (self.num_key_value_heads, -1))
         # vmap will try to split the cache
-        q, state, cache_ = remb(q, state, {})
+        q, state, cache_ = remb_q(q, state, {})
         cache = {**cache, **cache_}
-        k, state, cache_ = remb(k, state, {})
+        k, state, cache_ = remb_k(k, state, {})
         cache = {**cache, **cache_}
-        v, state, cache = v.reshape(v.shape[:-1] + (self.num_key_value_heads, -1))
+        v = v.reshape(v.shape[:-1] + (self.num_key_value_heads, -1))
 
         o, state, cache = self.attention(q, k, v, state, cache, attention_mask=attention_mask)
         o = o.reshape(o.shape[:-3] + (-1,))
