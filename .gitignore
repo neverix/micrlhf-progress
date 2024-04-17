@@ -2,3 +2,4 @@ models/
 __pycache__/
 memory.prof
 .venv/
+*.tar.gz
