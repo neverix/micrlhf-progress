@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import jmp
 from jax.sharding import Mesh, NamedSharding, Sharding, PartitionSpec
-from state_util import dummy_stateful, dummy_caching
+from oryx.core import sow
 
 
 class Weight(eqx.Module):
@@ -116,13 +116,13 @@ class MLP(eqx.Module):
         
         self.out_shape = (self.hidden_size,)
 
-    def __call__(self, x, state, cache):
+    def __call__(self, x):
         x = self.policy.cast_to_compute(x)
-        gate, state, cache = self.gate_proj(x, state, cache)
-        up, state, cache = self.up_proj(x, state, cache)
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
         x = gate * jax.nn.sigmoid(up)
-        x, state, cache = self.down_proj(x, state, cache)
-        return x, state, cache
+        x = self.down_proj(x)
+        return x
 
 
 class RotaryEmbedding(eqx.Module):
@@ -169,7 +169,7 @@ class Attention(eqx.Module):
             attention_mask = jnp.tril(
                 jnp.ones_like(attention_matrix[..., 0, 0], dtype=jnp.bool_)
             )[..., None, None]
-        attention_matrix = jnp.where(attention_mask, attention_matrix, jnp.NINF)
+        attention_matrix = jnp.where(attention_mask, attention_matrix, -jnp.inf)
         attention_matrix = jax.nn.softmax(attention_matrix, axis=-3)
         o = jnp.einsum("...abhg,...bhd->...ahgd", attention_matrix, v)
         return o
@@ -245,6 +245,9 @@ class SelfAttention(eqx.Module):
         q = remb_q(q)
         k = remb_k(k)
         v = v.reshape(v.shape[:-1] + (self.num_key_value_heads, -1))
+        
+        k = sow(k, tag="cache", name="key", mode="append")
+        v = sow(v, tag="cache", name="value", mode="append")
 
         o = self.attention(q, k, v, attention_mask=attention_mask)
         o = o.reshape(o.shape[:-3] + (-1,))
@@ -282,14 +285,16 @@ class LLaMALayer(eqx.Module):
         self.post_attention_layernorm = LayerNorm(hidden_size, mesh)
         self.out_shape = (hidden_size,)
 
-    def __call__(self, x, state: eqx.nn.State, cache: dict):
-        y, state, cache = jax.vmap(self.input_layernorm)(x, state, cache)
-        y, state, cache = self.self_attn(y, state, cache)
+    def __call__(self, x):
+        y = jax.vmap(self.input_layernorm)(x)
+        y = self.self_attn(y)
         x = x + y
-        y, state, cache = jax.vmap(self.post_attention_layernorm)(x, state, cache)
-        y, state, cache = jax.vmap(self.mlp)(y, state, cache)
+        x = sow(x, tag="activations", name="post_attn", mode="append")
+        y = jax.vmap(self.post_attention_layernorm)(x)
+        y = jax.vmap(self.mlp)(y)
         x = x + y
-        return x, state, cache
+        x = sow(x, tag="activations", name="post_mlp", mode="append")
+        return x
 
 
 class LLaMAModel(eqx.Module):

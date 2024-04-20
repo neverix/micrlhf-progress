@@ -16,7 +16,7 @@ Install dependencies
 ```
 pip install equinox
 pip install "jax[tpu]>=0.2.16" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-pip install transformers safetensors sentencepiece jmp
+pip install transformers safetensors sentencepiece jmp oryx
 ```
 
 ## Download models

@@ -1,4 +1,5 @@
 from equinox.nn import make_with_state
+import equinox as eqx
 
 
 def statify(model):
