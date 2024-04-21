@@ -120,7 +120,7 @@ class MLP(eqx.Module):
         x = self.policy.cast_to_compute(x)
         gate = self.gate_proj(x)
         up = self.up_proj(x)
-        x = gate * jax.nn.sigmoid(up)
+        x = gate * jax.nn.silu(up)
         x = self.down_proj(x)
         return x
 
