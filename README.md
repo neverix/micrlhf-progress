@@ -14,9 +14,7 @@ pyenv shell 3.12.0
 Install dependencies
 
 ```
-pip install equinox
-pip install "jax[tpu]>=0.2.16" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-pip install transformers safetensors sentencepiece jmp oryx
+poetry instal
 ```
 
 ## Download models
@@ -34,6 +32,12 @@ Download LLaMA 2 7B Chat:
 git config --global credential.helper store
 huggingface-cli login
 git clone https://huggingface.co/meta-llama/Llama-2-7b-hf models/Llama-2-7b-hf
+```
+
+Download LLaMA 3 8B Instruct (quantized):
+
+```
+wget 'https://huggingface.co/QuantFactory/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf?download=true' -c -O models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf
 ```
 
 ## Install pprof

@@ -17,6 +17,10 @@ url = "https://storage.googleapis.com/jax-releases/libtpu_releases.html"
 priority = "supplemental"
 
 
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.4"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
