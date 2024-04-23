@@ -3,6 +3,7 @@ __pycache__/
 memory.prof
 .venv/
 *.tar.gz
+scratch.ipynb
 
 # Python gitignore
 

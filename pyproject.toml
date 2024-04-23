@@ -20,6 +20,7 @@ priority = "supplemental"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^6.29.4"
+isort = "^5.13.2"
 
 [build-system]
 requires = ["poetry-core"]

@@ -1,8 +1,9 @@
 # pretty much copied from https://github.com/google-deepmind/penzai/blob/main/penzai/example_models/gemma/model_core.py
+import dataclasses
+
+import jax
 import jax.numpy as jnp
 from penzai import pz  # ez
-import dataclasses
-import jax
 
 
 @dataclasses.dataclass
@@ -67,6 +68,7 @@ class LlamaAttention(pz.nn.Attention):
     num_heads = config.num_attention_heads
     num_kv_heads = config.num_key_value_heads
     assert num_heads % num_kv_heads == 0
+    assert num_heads >= num_kv_heads
     q_rep = num_heads // num_kv_heads
     hidden_size = config.hidden_size
     projection_dim = config.head_dim
