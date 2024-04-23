@@ -168,16 +168,134 @@ class LlamaAttention(pz.nn.Attention):
     )
 
 
+@pz.pytree_dataclass(has_implicitly_inherited_fields=True)
+class LlamaBlock(pz.nn.Sequential):
+    @classmethod
+    def from_config(cls, config: LlamaConfig):
+        return cls([
+            pz.nn.Residual(pz.nn.Sequential([
+                pz.nn.add_parameter_prefix(
+                    "pre_attn_norm",
+                    pz.nn.RMSLayerNorm.from_config(
+                        across_axes={"embedding": config.hidden_size},
+                        dtype=config.parameter_dtype,
+                    ),
+                ),
+                pz.nn.add_parameter_prefix(
+                    "attn", LlamaAttention.from_config(config),
+                ),
+            ])),
+            pz.nn.Residual(pz.nn.Sequential([
+                pz.nn.add_parameter_prefix(
+                    "pre_mlp_norm",
+                    pz.nn.RMSLayerNorm.from_config(
+                        across_axes={"embedding": config.hidden_size},
+                        dtype=config.parameter_dtype,
+                    ),
+                ),
+                pz.nn.add_parameter_prefix(
+                    "mlp", LlamaMLP.from_config(config.hidden_size, config.intermediate_size, config.parameter_dtype),
+                ),
+            ])),
+        ])
+
+
+@pz.pytree_dataclass
+class LlamaInputs(pz.Struct):
+    tokens: pz.nx.NamedArray
+    attention_mask: pz.nx.NamedArray
+    token_positions: pz.nx.NamedArray
+    
+    @classmethod
+    def from_basic_segments(cls, tokens: pz.nx.NamedArray) -> "LlamaInputs":
+        seq = tokens.named_shape["seq"]
+        attention_mask = pz.nx.arange("seq", seq) >= pz.nx.arange("kv_seq", seq)
+        return cls(
+            tokens=tokens,
+            attention_mask=attention_mask,
+            token_positions=pz.nx.arange("seq", seq),
+        )
+
+
+@pz.pytree_dataclass
+class LlamaTransformer(pz.Layer):
+    config: LlamaConfig = dataclasses.field(metadata={"pytree_node": False})
+    body: pz.LayerLike
+    
+    @pz.checked_layer_call
+    def __call__(self, inputs: LlamaInputs) -> pz.nx.NamedArray:
+        return self.body((inputs.tokens, inputs.attention_mask, inputs.token_positions))
+
+    def input_structure(self) -> pz.chk.StructureAnnotation:
+        return LlamaInputs(
+            tokens=pz.chk.Wildcard("tokens"),
+            token_positions=pz.chk.Wildcard("positions"),
+            attention_mask=pz.chk.Wildcard("attention mask"),
+        )
+
+    def output_structure(self) -> pz.chk.StructureAnnotation:
+        return pz.chk.Wildcard("unnormalized logits")
+    
+    @classmethod
+    def from_config(cls, config: LlamaConfig) -> "LlamaTransformer":
+        return cls(
+            config=config,
+            body=pz.de.WithSideInputsFromInputTuple.handling(
+                pz.nn.Sequential([
+                    pz.nn.add_parameter_prefix(
+                        "embed",
+                        pz.nn.EmbeddingLookup(
+                            pz.nn.EmbeddingTable.from_config(
+                                vocab_size=config.vocab_size,
+                                embedding_axes={"embedding": config.hidden_size},
+                                dtype=config.parameter_dtype,
+                            )
+                        )
+                    ),
+                    pz.nn.CastToDType(config.activation_dtype),
+                    pz.nn.add_parameter_prefix(
+                        "blocks",
+                        pz.nn.Sequential([
+                            pz.nn.add_parameter_prefix(
+                                str(i), LlamaBlock.from_config(config)
+                            ) for i in range(config.num_layers)
+                        ]),
+                    ),
+                    pz.nn.add_parameter_prefix(
+                        "final_norm",
+                        pz.nn.RMSLayerNorm.from_config(
+                            across_axes={"embedding": config.hidden_size},
+                            dtype=config.parameter_dtype,
+                        ),
+                    ),
+                    pz.nn.add_parameter_prefix(
+                        "unembed",
+                        pz.nn.EmbeddingDecode(
+                            pz.nn.EmbeddingTable.from_config(
+                                vocab_size=config.vocab_size,
+                                embedding_axes={"embedding": config.hidden_size},
+                                dtype=config.parameter_dtype,
+                            )
+                        )
+                    )
+                ]),
+                tags=["attn_mask", "token_positions"],
+            )
+        )
+
+
 def main():
     config = LlamaConfig()
-    mlp = LlamaMLP.from_config(config.hidden_size, config.intermediate_size, jnp.float32)
-    attention = LlamaAttention.from_config(config)
-    attention = pz.nn.initialize_parameters(attention, jax.random.key(0))
-    attention = pz.de.WithSideInputsFromInputTuple.handling(attention, tags=["attn_mask", "token_positions"])
-    pz.ts.display(attention)
-    result = attention((pz.nx.ones({"batch": 1, "seq": 4, "embedding": config.hidden_size}),
-                        pz.nx.ones({"batch": 1, "seq": 4}),
-                        pz.nx.arange("seq", 4)))
+    transformer = LlamaTransformer.from_config(config)
+    transformer = (
+        transformer.select()
+        .at_instances_of(pz.nn.UninitializedParameter)
+        .apply(lambda param: param.initialize_with_value(
+            pz.nx.zeros(param.value_structure.named_shape, dtype=param.value_structure.dtype)
+        ))
+    )
+    result = transformer(LlamaInputs.from_basic_segments(
+        pz.nx.ones({"seq": 4}, dtype=jnp.int32)))
     return result
 
 
