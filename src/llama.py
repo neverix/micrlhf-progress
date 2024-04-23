@@ -283,6 +283,10 @@ class LlamaTransformer(pz.Layer):
             )
         )
 
+    @classmethod
+    def from_pretrained(cls, gguf_path: str):
+        pass
+
 
 def main():
     config = LlamaConfig()
