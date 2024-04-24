@@ -1,8 +1,10 @@
+import os
+from functools import partial
+
 import tiktoken
 from tiktoken.load import load_tiktoken_bpe
-from functools import partial
+
 from .gguf import GGUFReader
-import os
 
 
 def load_tokenizer(gguf_path: os.PathLike):

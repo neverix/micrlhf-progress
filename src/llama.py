@@ -1,9 +1,13 @@
 # pretty much copied from https://github.com/google-deepmind/penzai/blob/main/penzai/example_models/gemma/model_core.py
 import dataclasses
+import os
 
 import jax
 import jax.numpy as jnp
+import jax.sharding as jshard
+import numpy as np
 from penzai import pz  # ez
+
 from .gguf import GGUFReader
 from .quantizers import make_param
 
@@ -285,9 +289,21 @@ class LlamaTransformer(pz.Layer):
             )
         )
 
+    @property
+    def axis_name_to_mesh_name(self):
+        return {
+            "neurons": "mp",
+            "kv_heads": "mp"
+        }
+
     @classmethod
-    def from_pretrained(cls, gguf_path: str):
-        print("loading")
+    def from_pretrained(cls, gguf_path: os.PathLike, device_map="auto"):
+        if device_map != "auto":
+            raise ValueError(
+                "I'm actually not sure yet how device_map will be handled, " \
+                "this is just to mimic HF's API.")
+        mesh = jshard.Mesh(np.asarray(jax.devices()).reshape((1, 1, -1)), axis_names=("dp", "sp", "tp"))
+        
         gguf = GGUFReader(gguf_path)
         config = LlamaConfig(
             vocab_size=gguf.metadata["llama.vocab_size"],
@@ -324,7 +340,8 @@ class LlamaTransformer(pz.Layer):
         #         ]])
         # )
         transformer = transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
-            lambda param: make_param(param, *gguf[param_mapping[param.name]])
+            lambda param: make_param(param, *gguf[param_mapping[param.name]],
+                                     mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name)
         )
         
         return transformer

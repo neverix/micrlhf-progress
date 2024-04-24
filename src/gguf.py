@@ -1,9 +1,9 @@
 # based on https://github.com/ggerganov/ggml/blob/master/docs/gguf.md
 # loosely inspired by https://github.com/99991/pygguf/blob/main/gguf.py
-import struct
-import numpy as np
 import os
+import struct
 
+import numpy as np
 
 GGUF_DATA_TYPE = {
     4: "uint32",

@@ -1,16 +1,22 @@
-from penzai import pz
-from typing import Literal, Tuple
-from collections import OrderedDict
-from jaxtyping import Int8, Float16, Array
-import jax.numpy as jnp
-import numpy as np
 import dataclasses
+from collections import OrderedDict
+from typing import Dict, Literal, Optional, Tuple
+
+import jax.numpy as jnp
+import jax.sharding as jshard
+import numpy as np
+from jaxtyping import Array, Float16, Int8
+from penzai import pz
+from penzai.toolshed import sharding_util
 
 
 def make_param(uninitialized_param: pz.nn.UninitializedParameter,
                quant_type: Literal["fp32", "q8_0", "q4_k", "q6_k"],
                tensor_data: Tuple[np.array],
-               shape: Tuple[int]) -> pz.nn.Parameter:
+               shape: Tuple[int],
+               mesh: Optional[jshard.Mesh] = None,
+               axis_name_to_mesh_name: Optional[Dict[str, str]] = None,
+               ) -> pz.nn.Parameter:
     name = uninitialized_param.name 
     named_shape = uninitialized_param.value_structure.named_shape
     dtype = uninitialized_param.value_structure.dtype
@@ -54,6 +60,7 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
         dequantized,
         name,
     )
+    # sharding_util.name_to_name_device_put(name, mesh, axis_name_to_mesh_name=axis_name_to_mesh_name)
 
 
 @pz.pytree_dataclass
