@@ -67,7 +67,7 @@ class GGUFReader(object):
 
 def read_gguf_info(filename: os.PathLike):
     with open(filename, "rb") as gguf:
-        assert gguf.read(8) in (b"GGUF\x03\x00\x00\x00", b"GGUF\x02\x00\x00\x00")
+        assert gguf.read(8) == b"GGUF\x03\x00\x00\x00"
         
         tensor_count = struct.unpack("<Q", gguf.read(8))[0]
         metadata_kv_count = struct.unpack("<Q", gguf.read(8))[0]
@@ -93,9 +93,9 @@ def read_gguf_info(filename: os.PathLike):
             }
 
         end_of_header = gguf.tell()
-        alignment = 64
+        alignment = metadata.get("general.alignment", 32)
         tensors = {k: {**v, "offset": end_of_header + v["offset"]} for k, v in tensors.items()}
-        tensors = {k: {**v, "offset": v["offset"] - v["offset"] % alignment} for k, v in tensors.items()}
+        tensors = {k: {**v, "offset": v["offset"] + (alignment - v["offset"] % alignment) % alignment} for k, v in tensors.items()}
 
     return metadata, tensors
 
