@@ -4,6 +4,8 @@ import dataclasses
 import jax
 import jax.numpy as jnp
 from penzai import pz  # ez
+from .gguf import GGUFReader
+from .quantizers import make_param
 
 
 @dataclasses.dataclass
@@ -285,12 +287,49 @@ class LlamaTransformer(pz.Layer):
 
     @classmethod
     def from_pretrained(cls, gguf_path: str):
-        pass
+        gguf = GGUFReader(gguf_path)
+        config = LlamaConfig(
+            vocab_size=gguf.metadata["llama.vocab_size"],
+            hidden_size=gguf.metadata["llama.embedding_length"],
+            intermediate_size=gguf.metadata["llama.feed_forward_length"],
+            num_layers=gguf.metadata["llama.block_count"],
+            num_attention_heads=gguf.metadata["llama.attention.head_count"],
+            num_key_value_heads=gguf.metadata["llama.attention.head_count_kv"],
+        )
+        config.head_dim = gguf.metadata["llama.embedding_length"] // gguf.metadata["llama.attention.head_count"]
+        config.parameter_dtype = jnp.bfloat16
+        config.activation_dtype = jnp.float16
+        
+        transformer = cls.from_config(config)
+
+        param_mapping = {
+            "embed.embeddings": "token_embd.weight",
+            **{f"blocks.{i}.pre_attn_norm.scale.weights": f"blk.{i}.attn_norm.weight" for i in range(config.num_layers)},
+            **{f"blocks.{i}.attn.query.weights": f"blk.{i}.attn_q.weight" for i in range(config.num_layers)},
+            **{f"blocks.{i}.attn.key.weights": f"blk.{i}.attn_k.weight" for i in range(config.num_layers)},
+            **{f"blocks.{i}.attn.value.weights": f"blk.{i}.attn_v.weight" for i in range(config.num_layers)},
+            **{f"blocks.{i}.attn.output.weights": f"blk.{i}.attn_output.weight" for i in range(config.num_layers)},
+            **{f"blocks.{i}.pre_mlp_norm.scale.weights": f"blk.{i}.ffn_norm.weight" for i in range(config.num_layers)},
+            **{f"blocks.{i}.mlp.gate_proj.weights": f"blk.{i}.ffn_gate.weight" for i in range(config.num_layers)},
+            **{f"blocks.{i}.mlp.up_proj.weights": f"blk.{i}.ffn_up.weight" for i in range(config.num_layers)},
+            **{f"blocks.{i}.mlp.out_proj.weights": f"blk.{i}.ffn_down.weight" for i in range(config.num_layers)},
+            "final_norm.scale.weights": "output_norm.weight",
+            "unembed.embeddings": "output.weight",           
+        }
+        # transformer.select().at_instances_of(pz.nn.Linear).apply(
+        #     lambda linear: make_linear(linear, *gguf[param_mapping[
+        #         linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
+        #         ]])
+        # )
+        transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
+            lambda param: make_param(param, *gguf[param_mapping[param.name]])
+        )
+        
+        return transformer
 
 
 def main():
-    config = LlamaConfig()
-    transformer = LlamaTransformer.from_config(config)
+    transformer = LlamaTransformer.from_pretrained("models/Meta-Llama-3-8B-Instruct.Q8_0.gguf")
     transformer = (
         transformer.select()
         .at_instances_of(pz.nn.UninitializedParameter)
