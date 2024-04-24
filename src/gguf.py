@@ -37,9 +37,8 @@ GGUF_DATA_TYPE_INV = {v: k for k, v in GGUF_DATA_TYPE.items()}
 
 class GGUFReader(object):
     def __init__(self, filename: os.PathLike):
-        header_end, self.gguf_metadata, self.gguf_tensors = read_gguf_info(filename)
-        end = max(v["offset"] + v["size"] for v in self.gguf_tensors.values())
-        self.mmap = np.memmap(filename, offset=header_end)
+        self.gguf_metadata, self.gguf_tensors = read_gguf_info(filename)
+        self.mmap = np.memmap(filename)
 
     @property
     def metadata(self):
@@ -67,10 +66,8 @@ class GGUFReader(object):
 
 
 def read_gguf_info(filename: os.PathLike):
-    # read header and metadata
     with open(filename, "rb") as gguf:
-        # handling version 3 only
-        assert gguf.read(8) == b"GGUF\x03\x00\x00\x00"
+        assert gguf.read(8) in (b"GGUF\x03\x00\x00\x00", b"GGUF\x02\x00\x00\x00")
         
         tensor_count = struct.unpack("<Q", gguf.read(8))[0]
         metadata_kv_count = struct.unpack("<Q", gguf.read(8))[0]
@@ -97,9 +94,10 @@ def read_gguf_info(filename: os.PathLike):
 
         end_of_header = gguf.tell()
         alignment = 64
+        tensors = {k: {**v, "offset": end_of_header + v["offset"]} for k, v in tensors.items()}
         tensors = {k: {**v, "offset": v["offset"] - v["offset"] % alignment} for k, v in tensors.items()}
 
-    return end_of_header, metadata, tensors
+    return metadata, tensors
 
 
 def read_gguf_kv(f):

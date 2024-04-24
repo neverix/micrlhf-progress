@@ -72,6 +72,7 @@ class LlamaAttention(pz.nn.Attention):
     assert num_heads % num_kv_heads == 0
     assert num_heads >= num_kv_heads
     q_rep = num_heads // num_kv_heads
+    num_heads = num_kv_heads
     hidden_size = config.hidden_size
     projection_dim = config.head_dim
 
@@ -140,8 +141,7 @@ class LlamaAttention(pz.nn.Attention):
             pz.nn.ApplyAttentionMask.from_config(
                 mask_tag="attn_mask",
                 masked_out_value=jnp.array(
-                    # ⁉️
-                    -2.3819763e38, dtype=config.activation_dtype
+                    jnp.finfo(config.activation_dtype).min, dtype=config.activation_dtype
                 ),
             ),
             pz.nn.Softmax("kv_seq"),
@@ -158,8 +158,8 @@ class LlamaAttention(pz.nn.Attention):
                 "output",
                 pz.nn.Linear.from_config(
                     input_axes={
-                        "q_rep": q_rep,
                         "kv_heads": num_heads,
+                        "q_rep": q_rep,
                         "projection": projection_dim,
                     },
                     output_axes={"embedding": hidden_size},
@@ -288,6 +288,7 @@ class LlamaTransformer(pz.Layer):
     @classmethod
     def from_pretrained(cls, gguf_path: str):
         gguf = GGUFReader(gguf_path)
+        print(gguf.metadata)
         config = LlamaConfig(
             vocab_size=gguf.metadata["llama.vocab_size"],
             hidden_size=gguf.metadata["llama.embedding_length"],
@@ -316,12 +317,12 @@ class LlamaTransformer(pz.Layer):
             "final_norm.scale.weights": "output_norm.weight",
             "unembed.embeddings": "output.weight",           
         }
-        # transformer.select().at_instances_of(pz.nn.Linear).apply(
+        # transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
         #     lambda linear: make_linear(linear, *gguf[param_mapping[
         #         linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
         #         ]])
         # )
-        transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
+        transformer = transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
             lambda param: make_param(param, *gguf[param_mapping[param.name]])
         )
         
