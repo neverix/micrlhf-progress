@@ -317,7 +317,7 @@ class LlamaTransformer(pz.Layer):
             "final_norm.scale.weights": "output_norm.weight",
             "unembed.embeddings": "output.weight",           
         }
-        print("ggufication")
+
         # transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
         #     lambda linear: make_linear(linear, *gguf[param_mapping[
         #         linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
