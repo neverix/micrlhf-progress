@@ -21,11 +21,20 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
 
     assert np.prod(shape) == dequantized.size
     assert np.prod(shape) == np.prod(list(named_shape.values()))
-    dequantized = dequantized.reshape(shape)
+    print("pre", name, named_shape, shape, dequantized.shape)
     if name.endswith(".embeddings"):
-        dequantized = dequantized.T
-    if len(shape) == 2:
-        dequantized = dequantized.T
+        dequantized = dequantized.reshape(shape[::-1])
+    else:
+        dequantized = dequantized.reshape(shape[::-1])
+        if ".attn.query" in name or ".attn.key" in name:
+            # llama.cpp does rotary differently, i think
+            head_dim = named_shape["projection"]
+            dequantized = dequantized \
+                .reshape(-1, head_dim // 2, 2, dequantized.shape[-1]) \
+                    .swapaxes(1, 2) \
+                        .reshape(dequantized.shape)  # taking the mayakovsky pill
+        dequantized = dequantized.T  # for jax
+    print("post", name, named_shape, shape, dequantized.shape)
     dequantized = jnp.asarray(dequantized.astype(dtype)).reshape(named_shape.values())
     dequantized = pz.nx.NamedArray(OrderedDict(named_shape), dequantized)
     # TODO make a custom ParameterLike for quantized parameters

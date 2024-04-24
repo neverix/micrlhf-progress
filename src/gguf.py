@@ -58,8 +58,8 @@ class GGUFReader(object):
         if tensor["ggml_type"] == "FP32":
             return "fp32", (np.frombuffer(data, dtype=np.float32),), tensor["shape"]
         elif tensor["ggml_type"] == "Q8_0":
-            scales = np.frombuffer(data, dtype=np.float16).reshape(-1, 1 + 16)[:, :1]
-            qs = np.frombuffer(data, dtype=np.int8).reshape(-1, 2 + 32)[:, 2:]
+            scales = np.frombuffer(data, dtype=np.float16).reshape(-1, 1 + GGUF_BLOCK_STRIDES["Q8_0"] // 2)[:, :1]
+            qs = np.frombuffer(data, dtype=np.int8).reshape(-1, 2 + GGUF_BLOCK_STRIDES["Q8_0"])[:, 2:]
             return "int8", (scales, qs), tensor["shape"]
         else:
             raise NotImplementedError(f"GGML type {tensor['ggml_type']} not implemented (yet)")
