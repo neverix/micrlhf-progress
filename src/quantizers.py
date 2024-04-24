@@ -9,6 +9,7 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
                quant_type: Literal["fp32", "int8", "int6", "int4"],
                tensor_data: Tuple[np.array],
                shape: Tuple[int]) -> pz.nn.Parameter:
+    name = uninitialized_param.name 
     named_shape = uninitialized_param.value_structure.named_shape
     dtype = uninitialized_param.value_structure.dtype
     if quant_type == "fp32":
@@ -21,12 +22,14 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
     assert np.prod(shape) == dequantized.size
     assert np.prod(shape) == np.prod(list(named_shape.values()))
     dequantized = dequantized.reshape(shape)
-    if uninitialized_param.name.endswith(".embeddings"):
+    if name.endswith(".embeddings"):
+        dequantized = dequantized.T
+    if len(shape) == 2:
         dequantized = dequantized.T
     dequantized = jnp.asarray(dequantized.astype(dtype)).reshape(named_shape.values())
     dequantized = pz.nx.NamedArray(OrderedDict(named_shape), dequantized)
     # TODO make a custom ParameterLike for quantized parameters
     return pz.nn.Parameter(
         dequantized,
-        uninitialized_param.name,
+        name,
     )

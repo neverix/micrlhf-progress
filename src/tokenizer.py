@@ -14,7 +14,7 @@ def load_tokenizer(gguf_path: os.PathLike):
     tokenizer = tiktoken.Encoding(
         name="tokenizer",
         pat_str=r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+",
-        mergeable_ranks={t.encode("utf-8"): i for i, t in enumerate(normal)},
+        mergeable_ranks={t.replace("Ġ", " ").encode("utf-8"): i for i, t in enumerate(normal)},
         special_tokens={t: i + len(normal) for i, t in enumerate(special)},
     )
     tokenizer.encode = partial(tokenizer.encode, allowed_special=set(special))
