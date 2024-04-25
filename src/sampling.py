@@ -1,6 +1,8 @@
 import dataclasses
 from collections import OrderedDict
+from functools import partial
 
+import jax
 import jax.numpy as jnp
 import tiktoken
 from penzai import pz
@@ -27,24 +29,26 @@ def sample(llama: LlamaTransformer, tokenizer: tiktoken.Encoding,
     llama_cached, cache = LlamaKVCachingTransformer.from_uncached(llama, max_seq_len, {"batch": batch_size})
     llama_cached = jit_wrapper.Jitted(llama_cached)
 
-    def sample(logits, tokens):
+    def sample(logits, tokens, cache, key):
         choices = logits.untag("vocabulary").argmax().untag("seq")[cache.cache_end_index - 1]
         tokens = pz.nx.nmap(lambda t, c: t.at[cache.cache_end_index].set(c))(tokens.untag("seq"), choices).tag("seq")
-        return choices, tokens
+        return choices, tokens, key
 
     # prefill
     base_inputs = LlamaKVCachingInputs.from_basic_subsegments(tokens, cache)
     base_mask = tokens != pad_token_id
-    pz.ts.display((base_inputs.attention_mask & base_mask.untag("seq").tag("kv_seq"))[{"batch": 0}])
     base_inputs = dataclasses.replace(base_inputs,
                                       attention_mask=base_inputs.attention_mask & base_mask.untag("seq").tag("kv_seq")
                                       )
     logits, cache = llama_cached(base_inputs)
     cache = dataclasses.replace(cache, cache_end_index=initial_length)
 
+    key = jax.random.key(0)
     # generate
-    advanced, tokens = sample(logits, tokens)
-    for _ in (bar := trange(max_seq_len)):
+    advanced, tokens, key = sample(logits, tokens, cache, key)
+    
+    @partial(jax.jit, donate_argnums=(1, 2, 3, 4))
+    def sample_step(llama_cached, advanced, tokens, cache, key):
         inputs = LlamaKVCachingInputs(
             tokens=advanced[None].tag("seq"),
             positions=pz.nx.full({"batch": batch_size, "seq": 1}, cache.cache_end_index, jnp.int32),
@@ -54,7 +58,11 @@ def sample(llama: LlamaTransformer, tokenizer: tiktoken.Encoding,
             sampling_state=cache
         )
         logits, cache = llama_cached(inputs)
-        advanced, tokens = sample(logits, tokens)
+        advanced, tokens, key = sample(logits, tokens, cache, key)
+        return advanced, tokens, cache, key
+
+    for _ in (bar := trange(max_seq_len)):
+       advanced, tokens, cache, key = sample_step(llama_cached, advanced, tokens, cache, key)
         # bar.set_description(tokenizer.decode(tokens.untag("batch", "seq").data_array[0]))
 
     return [tokenizer.decode(sequence) for sequence in tokens.untag("batch", "seq").data_array]
@@ -68,6 +76,7 @@ def main(
     tokens = tokenizer.encode(prompt)
     tokenizer.decode(tokens)
     llama = LlamaTransformer.from_pretrained(filename)
+    print(sample(llama, tokenizer, prompt))
     print(sample(llama, tokenizer, prompt))
 
 
