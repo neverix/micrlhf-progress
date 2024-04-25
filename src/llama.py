@@ -24,6 +24,10 @@ class LlamaConfig:
     parameter_dtype: jax.typing.DTypeLike = jnp.bfloat16
     activation_dtype: jax.typing.DTypeLike = jnp.float16
 
+    @property
+    def projection_dim(self):
+        return self.hidden_size // self.num_attention_heads
+
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
 class LlamaMLP(pz.nn.Sequential):
@@ -95,7 +99,7 @@ class LlamaAttention(pz.nn.Attention):
                 ),
             ),
             pz.nn.ApplyRoPE.from_config(
-                positions_tag="token_positions",
+                positions_tag="positions",
                 embedding_axis="projection",
             ),
             pz.nn.ConstantRescale(
@@ -117,9 +121,10 @@ class LlamaAttention(pz.nn.Attention):
                 ),
             ),
             pz.nn.ApplyRoPE.from_config(
-                positions_tag="token_positions",
+                positions_tag="positions",
                 embedding_axis="projection",
             ),
+            pz.nn.CastToDType(config.activation_dtype),
         ]),
         input_to_value=pz.nn.Sequential([
             pz.nn.add_parameter_prefix(
@@ -133,6 +138,7 @@ class LlamaAttention(pz.nn.Attention):
                     dtype=config.parameter_dtype,
                 ),
             ),
+            pz.nn.CastToDType(config.activation_dtype),
         ]),
         query_key_to_attn=pz.nn.Sequential([
             pz.nn.NamedEinsum(
@@ -174,6 +180,7 @@ class LlamaAttention(pz.nn.Attention):
     )
 
 
+
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
 class LlamaBlock(pz.nn.Sequential):
     @classmethod
@@ -187,6 +194,7 @@ class LlamaBlock(pz.nn.Sequential):
                         dtype=config.parameter_dtype,
                     ),
                 ),
+                pz.nn.CastToDType(config.activation_dtype),
                 pz.nn.add_parameter_prefix(
                     "attn", LlamaAttention.from_config(config),
                 ),
@@ -199,6 +207,7 @@ class LlamaBlock(pz.nn.Sequential):
                         dtype=config.parameter_dtype,
                     ),
                 ),
+                pz.nn.CastToDType(config.activation_dtype),
                 pz.nn.add_parameter_prefix(
                     "mlp", LlamaMLP.from_config(config.hidden_size, config.intermediate_size, config.parameter_dtype),
                 ),
@@ -210,7 +219,7 @@ class LlamaBlock(pz.nn.Sequential):
 class LlamaInputs(pz.Struct):
     tokens: pz.nx.NamedArray
     attention_mask: pz.nx.NamedArray
-    token_positions: pz.nx.NamedArray
+    positions: pz.nx.NamedArray
     
     @classmethod
     def from_basic_segments(cls, tokens: pz.nx.NamedArray) -> "LlamaInputs":
@@ -219,7 +228,7 @@ class LlamaInputs(pz.Struct):
         return cls(
             tokens=tokens,
             attention_mask=attention_mask,
-            token_positions=pz.nx.arange("seq", seq),
+            positions=pz.nx.arange("seq", seq),
         )
 
 
@@ -230,12 +239,12 @@ class LlamaTransformer(pz.Layer):
     
     @pz.checked_layer_call
     def __call__(self, inputs: LlamaInputs) -> pz.nx.NamedArray:
-        return self.body((inputs.tokens, inputs.attention_mask, inputs.token_positions))
+        return self.body((inputs.tokens, inputs.positions, inputs.attention_mask))
 
     def input_structure(self) -> pz.chk.StructureAnnotation:
         return LlamaInputs(
             tokens=pz.chk.Wildcard("tokens"),
-            token_positions=pz.chk.Wildcard("positions"),
+            positions=pz.chk.Wildcard("positions"),
             attention_mask=pz.chk.Wildcard("attention mask"),
         )
 
@@ -258,7 +267,6 @@ class LlamaTransformer(pz.Layer):
                             )
                         )
                     ),
-                    pz.nn.CastToDType(config.activation_dtype),
                     pz.nn.add_parameter_prefix(
                         "blocks",
                         pz.nn.Sequential([
@@ -285,7 +293,7 @@ class LlamaTransformer(pz.Layer):
                         )
                     )
                 ]),
-                tags=["attn_mask", "token_positions"],
+                tags=["positions", "attn_mask"],
             )
         )
 
@@ -295,6 +303,10 @@ class LlamaTransformer(pz.Layer):
             "neurons": "mp",
             "kv_heads": "mp"
         }
+
+    @property
+    def inputs(self):
+        return LlamaInputs
 
     @classmethod
     def from_pretrained(cls, gguf_path: os.PathLike, device_map="auto"):
@@ -345,6 +357,9 @@ class LlamaTransformer(pz.Layer):
         )
         
         return transformer
+
+    def inference_mode(self):
+        pass
 
 
 def main():

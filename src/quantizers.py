@@ -2,6 +2,7 @@ import dataclasses
 from collections import OrderedDict
 from typing import Dict, Literal, Optional, Tuple
 
+import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
@@ -31,7 +32,7 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
             embed_dim = named_shape["embedding"]
             n_heads = np.prod(list(named_shape.values())) // head_dim // embed_dim
             d = d \
-                .reshape(n_heads, head_dim // 2, 2, -1, d.shape[-1]) \
+                .reshape(n_heads, head_dim // 2, 2, -1, *d.shape[1:]) \
                     .swapaxes(1, 2) \
                         .reshape(d.shape)  # taking the mayakovsky pill
             new_data.append(d)
@@ -42,8 +43,8 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
         return Int8Parameter(
             name=name,
             value_structure=uninitialized_param.value_structure,
-            scale=jnp.asarray(tensor_data[0]),
-            quants=jnp.asarray(tensor_data[1]),
+            scale=jax.device_put(tensor_data[0]),
+            quants=jax.device_put(tensor_data[1]),
             shape=shape[::-1],
             transpose=not name.endswith(".embeddings")
         )
@@ -63,11 +64,12 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
     # sharding_util.name_to_name_device_put(name, mesh, axis_name_to_mesh_name=axis_name_to_mesh_name)
 
 
+# not actually a parameter - doesn't inherit from pz.nn.Parameter
 @pz.pytree_dataclass
 class QuantizedParameter(pz.Struct):
-    name: str
+    name: str = dataclasses.field(metadata={"pytree_node": False})
     value_structure: pz.chk.ArraySpec
-    shape: Tuple[int]
+    shape: Tuple[int] = dataclasses.field(metadata={"pytree_node": False})
     transpose: bool = dataclasses.field(metadata={"pytree_node": False})
     
     def dequantize(self):
