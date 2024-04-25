@@ -40,8 +40,9 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
     if quant_type == "fp32":
         dequantized = tensor_data[0]
     elif quant_type == "q8_0":
-        return Int8Parameter(
+        return Int8Parameter.with_init(
             name=name,
+            value=None,
             value_structure=uninitialized_param.value_structure,
             scale=jax.device_put(tensor_data[0]),
             quants=jax.device_put(tensor_data[1]),
@@ -68,15 +69,25 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
 @pz.pytree_dataclass
 class QuantizedParameter(pz.Struct):
     name: str = dataclasses.field(metadata={"pytree_node": False})
+    value: Optional[pz.nx.NamedArray]
     value_structure: pz.chk.ArraySpec
     shape: Tuple[int] = dataclasses.field(metadata={"pytree_node": False})
     transpose: bool = dataclasses.field(metadata={"pytree_node": False})
     
     def dequantize(self):
         raise NotImplementedError("Abstract quantized parameter doesn't have a dequantize method")
+
+    # lazy!    
+    # @property
+    # def value(self):
+    #     return self.get_value()
+    # TODO inference kernels
+    @classmethod
+    def with_init(cls, *args, **kwargs):
+        inst_base = cls(*args, **kwargs)
+        return dataclasses.replace(inst_base, value=inst_base.get_value())
     
-    @property
-    def value(self):
+    def get_value(self):
         dequantized = self.dequantize()
         dequantized = dequantized.reshape(self.shape)
         if self.transpose:
