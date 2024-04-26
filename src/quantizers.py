@@ -22,11 +22,18 @@ def make_linear(old_linear: pz.nn.Linear,
     tensor_data, do_transpose = make_param(
         param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name, return_metadata=True)
     if quant_type == "q8_0" and do_transpose:
+        new_data = []
+        for d in tensor_data:
+            d = d.reshape(*old_linear.output_axes.values(),
+                          *list(old_linear.input_axes.values())[:-1], -1, d.shape[-1])
+            d = jax.device_put(d)  # TODO replicate
+            d = pz.nx.wrap(d, *old_linear.output_axes.keys(), *old_linear.input_axes.keys(), "quant_group")
+            new_data.append(d)
         return Linear8bitTranspose(
             in_features=old_linear.input_axes,
             out_features=old_linear.output_axes,
-            scale=tensor_data[0],
-            quants=tensor_data[1],
+            scale=new_data[0],
+            quants=new_data[1],
             dtype=param.value_structure.dtype
         )
     # fall back on dequantizing the parameter on HBM
@@ -59,13 +66,18 @@ class QuantizedLinear(pz.Layer):
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
 class Linear8bitTranspose(QuantizedLinear):
-    scale: Float16[Array, "blocks 1"]
-    quants: Int8[Array, "blocks 32"]
+    scale: pz.nx.NamedArray
+    quants: pz.nx.NamedArray
     dtype: jax.typing.DTypeLike = dataclasses.field(metadata={"pytree_node": False})
 
     def quant_linear(self, inputs: jnp.ndarray) -> jnp.ndarray:
+        scale, quants = self.scale, self.quants
+        scale = pz.nx.nmap(jnp.ravel)(scale.untag(*(k for k in scale.named_shape.keys() if k != "quant_group"))
+                                      ).tag("quant_groups").unwrap("quant_groups", "quant_group")
+        quants = pz.nx.nmap(jnp.ravel)(quants.untag(*(k for k in quants.named_shape.keys() if k != "quant_group"))
+                                      ).tag("quant_groups").unwrap("quant_groups", "quant_group")
         # TODO 8 bit kernels
-        weight = self.scale.astype(self.dtype) * self.quants
+        weight = scale.astype(self.dtype) * quants
         weight = weight.reshape(-1, np.prod(list(self.in_features.values()))).T
         return inputs @ weight
 
@@ -108,9 +120,10 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
         dequantized = dequantized.reshape(shape[::-1])
         if do_transpose:
             dequantized = dequantized.T  # for jax
-        dequantized = jnp.asarray(dequantized.astype(dtype)).reshape(named_shape.values())
-        dequantized = pz.nx.NamedArray(OrderedDict(named_shape), dequantized)
-        # TODO make a custom ParameterLike for quantized parameters
+        dequantized = dequantized.astype(dtype).reshape(*named_shape.values())
+        # TODO replicate
+        dequantized = jax.device_put(dequantized)
+        dequantized = pz.nx.wrap(dequantized, *named_shape.keys())
         return pz.nn.Parameter(
             dequantized,
             name,
