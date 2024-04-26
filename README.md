@@ -1,3 +1,6 @@
+# What is this
+This is a library that contains a standard implementation of LLaMA in [Penzai](https://github.com/google-deepmind/penzai). So far, the library can load LLaMA with 8-bit quantization from GGUF files and run them without special kernels. In the future, I am planning to implement Flash and Paged attention as well as kernels for quantized inference.
+
 # Installation
 
 ## Dependencies
