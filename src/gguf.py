@@ -56,7 +56,7 @@ class GGUFReader(object):
         start, end = tensor["offset"], tensor["offset"] + tensor["size"]
         data = self.mmap[start:end]
         if tensor["ggml_type"] == "FP32":
-            return "fp32", (np.frombuffer(data, dtype=np.float32),), tensor["shape"]
+            return "fp32", (np.frombuffer(data, dtype=np.float32)[..., None],), tensor["shape"]
         elif tensor["ggml_type"] == "Q8_0":
             scales = np.frombuffer(data, dtype=np.float16).reshape(-1, 1 + GGUF_BLOCK_STRIDES["Q8_0"] // 2)[:, :1]
             qs = np.frombuffer(data, dtype=np.int8).reshape(-1, 2 + GGUF_BLOCK_STRIDES["Q8_0"])[:, 2:]

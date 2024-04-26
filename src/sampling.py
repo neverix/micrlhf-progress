@@ -74,7 +74,6 @@ def main(
 ):
     tokenizer = load_tokenizer(filename)
     tokens = tokenizer.encode(prompt)
-    tokenizer.decode(tokens)
     llama = LlamaTransformer.from_pretrained(filename)
     print(sample(llama, tokenizer, prompt))
     print(sample(llama, tokenizer, prompt))
