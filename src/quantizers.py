@@ -11,6 +11,17 @@ from penzai import pz
 from penzai.toolshed import sharding_util
 
 
+def make_linear(old_linear: pz.nn.Linear,
+                quant_type: Literal["fp32", "q8_0", "q4_k", "q6_k"],
+                tensor_data: Tuple[np.array],
+                shape: Tuple[int],
+                mesh: Optional[jshard.Mesh] = None,
+                axis_name_to_mesh_name: Optional[Dict[str, str]] = None,
+                ) -> pz.nn.Linear:
+    return old_linear.select().at_instances_of(pz.nn.Parameter).apply(
+        lambda p: make_param(p, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name))
+
+
 def make_param(uninitialized_param: pz.nn.UninitializedParameter,
                quant_type: Literal["fp32", "q8_0", "q4_k", "q6_k"],
                tensor_data: Tuple[np.array],

@@ -9,7 +9,7 @@ import numpy as np
 from penzai import pz  # ez
 
 from .gguf import GGUFReader
-from .quantizers import make_param
+from .quantizers import make_param, make_linear
 
 
 @dataclasses.dataclass
@@ -346,11 +346,11 @@ class LlamaTransformer(pz.Layer):
             "unembed.embeddings": "output.weight",           
         }
 
-        # transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
-        #     lambda linear: make_linear(linear, *gguf[param_mapping[
-        #         linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
-        #         ]])
-        # )
+        transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
+            lambda linear: make_linear(linear, *gguf[param_mapping[
+                linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
+                ]], mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name)
+        )
         transformer = transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
             lambda param: make_param(param, *gguf[param_mapping[param.name]],
                                      mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name)
