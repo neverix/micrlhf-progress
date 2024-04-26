@@ -18,8 +18,11 @@ def make_linear(old_linear: pz.nn.Linear,
                 mesh: Optional[jshard.Mesh] = None,
                 axis_name_to_mesh_name: Optional[Dict[str, str]] = None,
                 ) -> pz.nn.Linear:
-    return old_linear.select().at_instances_of(pz.nn.Parameter).apply(
-        lambda p: make_param(p, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name))
+    param = old_linear.select().at_instances_of(pz.nn.UninitializedParameter).get()
+    if quant_type == "q8_0":
+        pass
+    param = make_param(param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name)
+    return old_linear.select().at_instances_of(pz.nn.Parameter).apply(lambda p: param)
 
 
 def make_param(uninitialized_param: pz.nn.UninitializedParameter,
@@ -28,6 +31,7 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
                shape: Tuple[int],
                mesh: Optional[jshard.Mesh] = None,
                axis_name_to_mesh_name: Optional[Dict[str, str]] = None,
+               return_metadata: bool = False,
                ) -> pz.nn.Parameter:
     name = uninitialized_param.name 
     named_shape = uninitialized_param.value_structure.named_shape
@@ -48,8 +52,20 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
                         .reshape(d.shape)  # taking the mayakovsky pill
             new_data.append(d)
         tensor_data = new_data
+
     if quant_type == "fp32":
         dequantized = tensor_data[0]
+
+        dequantized = dequantized.reshape(shape[::-1])
+        if not name.endswith(".embeddings"):
+            dequantized = dequantized.T  # for jax
+        dequantized = jnp.asarray(dequantized.astype(dtype)).reshape(named_shape.values())
+        dequantized = pz.nx.NamedArray(OrderedDict(named_shape), dequantized)
+        # TODO make a custom ParameterLike for quantized parameters
+        return pz.nn.Parameter(
+            dequantized,
+            name,
+        )
     elif quant_type == "q8_0":
         return Int8Parameter.with_init(
             name=name,
@@ -62,18 +78,6 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
         )
     else:
         raise NotImplementedError(f"Quantization type {quant_type} not implemented")
-
-    dequantized = dequantized.reshape(shape[::-1])
-    if not name.endswith(".embeddings"):
-        dequantized = dequantized.T  # for jax
-    dequantized = jnp.asarray(dequantized.astype(dtype)).reshape(named_shape.values())
-    dequantized = pz.nx.NamedArray(OrderedDict(named_shape), dequantized)
-    # TODO make a custom ParameterLike for quantized parameters
-    return pz.nn.Parameter(
-        dequantized,
-        name,
-    )
-    # sharding_util.name_to_name_device_put(name, mesh, axis_name_to_mesh_name=axis_name_to_mesh_name)
 
 
 # not actually a parameter - doesn't inherit from pz.nn.Parameter

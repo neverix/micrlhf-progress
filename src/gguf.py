@@ -1,5 +1,5 @@
 # based on https://github.com/ggerganov/ggml/blob/master/docs/gguf.md
-# loosely inspired by https://github.com/99991/pygguf/blob/main/gguf.py
+# inspired by https://github.com/99991/pygguf/blob/main/gguf.py
 import os
 import struct
 
