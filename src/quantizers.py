@@ -71,21 +71,23 @@ class QuantizedLinear(pz.Layer):
 
 
 def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref):
-    scaled = quants_ref[...].astype(jnp.float32) * scale_ref[...].astype(jnp.float32)
-    scaled = scaled.reshape(inputs_ref.shape[-1], -1)
-    result = inputs_ref[...].astype(jnp.float32) @ scaled.astype(jnp.float32)
+    quants = quants_ref[...]
+    scale = jnp.broadcast_to(scale_ref[...].astype(jnp.float32), quants.shape).astype(jnp.bfloat16)
+    quants, scale = quants.reshape(-1, quants.shape[-1]), scale.reshape(-1, scale.shape[-1])
+    scaled = jax.lax.mul(scale, quants.astype(jnp.bfloat16))
+    result = jax.lax.dot_general(inputs_ref[...], scaled, dimension_numbers=(((1,), (0,)), ((), ())), preferred_element_type=jnp.float32)
     outputs_ref[...] = result.astype(outputs_ref.dtype)
 
 
 def matmul_8bit_fast(quants, scale, inputs):
     inputs = inputs.astype(jnp.bfloat16)
     scale = scale.astype(jnp.bfloat16)
-    
-    block_x, block_y = 8, 128
+
+    block_x, block_y = 64, 128
     return pl.pallas_call(
         matmul_8bit_kernel,
         out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
-        grid=(int(inputs.shape[0] / block_x), int(quants.shape[2] // block_y)),
+        grid=(int(inputs.shape[0] / block_x), int(quants.shape[2] / block_y)),
         in_specs=[
             pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], quants.shape[1], block_y)),
             pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], 1, block_y)),
@@ -94,6 +96,7 @@ def matmul_8bit_fast(quants, scale, inputs):
         out_specs=pl.BlockSpec(
             lambda i, j: (i, j), (block_x, block_y)
         ),
+        compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "parallel"))),
     )(quants, scale, inputs)
 
 
