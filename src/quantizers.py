@@ -72,24 +72,27 @@ class QuantizedLinear(pz.Layer):
 
 
 def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref, *, block_k, quant_group_size):
+    block_m = quants_ref.shape[2]
+    
+    accum_ref[...] = jnp.zeros_like(accum_ref)
+    
     block_group = block_k // quant_group_size
-    @partial(
-        jax.lax.fori_loop, 0, inputs_ref.shape[-1] // block_k, init_val=None
-    )
+    loop_iterations = max(1, inputs_ref.shape[-1] // block_k)
     def matmul_loop(i, _):
         quants = pl.load(quants_ref,
-                         (pl.dslice(i * block_group, block_group),
-                          slice(None), slice(None)))
+                            (pl.dslice(i * block_group, block_group),
+                            slice(None), slice(None)))
         scale = pl.load(scale_ref,
                         (pl.dslice(i * block_group, block_group),
                         slice(None), slice(None)))
         scale = jnp.broadcast_to(scale.astype(jnp.float32), quants.shape)
-        scaled = (scale.reshape(-1, scale.shape[-1]) * quants.reshape(-1, quants.shape[-1])).reshape(-1, quants.shape[-1])
+        scaled = scale.reshape(block_k, block_m) * quants.reshape(block_k, block_m)
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
         result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), scaled.astype(jnp.bfloat16),
                                     dimension_numbers=(((1,), (0,)), ((), ())),
                                     preferred_element_type=jnp.float32)
         accum_ref[...] += result
+    jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None)
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 
@@ -98,6 +101,8 @@ def matmul_8bit_fast(quants, scale, inputs):
     scale = scale.astype(jnp.bfloat16)
 
     block_x, block_y, block_k = 256, 256, 512
+    if inputs.shape[0] < block_x:
+        block_x = max(16, int(2 ** np.floor(np.log2(inputs.shape[0]))))
     og_shape = inputs.shape
     inputs = jnp.pad(inputs, ((0, max(0, block_x - inputs.shape[0])), (0, 0)))
 
