@@ -72,12 +72,9 @@ class QuantizedLinear(pz.Layer):
         return pz.chk.Wildcard("output features")
 
 
-def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref, *, block_k, quant_group_size):
+def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, *, block_k, quant_group_size):
     block_group = block_k // quant_group_size
-    @partial(
-        jax.lax.fori_loop, 0, inputs_ref.shape[-1] // block_k, init_val=None
-    )
-    def matmul_loop(i, _):
+    def matmul_loop(i, accum):
         quants = pl.load(quants_ref,
                          (pl.dslice(i * block_group, block_group),
                           slice(None), slice(None)))
@@ -89,11 +86,12 @@ def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref
         scaled = jax.lax.mul(scale.astype(jnp.float32), quants.astype(jnp.float32))
         
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
-        result = jax.lax.dot_general(inputs.astype(jnp.float32), scaled,
+        result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), scaled.astype(jnp.bfloat16),
                                     dimension_numbers=(((1,), (0,)), ((), ())),
                                     preferred_element_type=jnp.float32)
-        accum_ref[...] += result
-    outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
+        return accum + result
+    accum = jax.lax.fori_loop(0, inputs_ref.shape[-1] // block_k, matmul_loop, init_val=jnp.zeros(outputs_ref.shape, dtype=jnp.float32),)
+    outputs_ref[...] = accum.astype(outputs_ref.dtype)
 
 
 def matmul_8bit_fast(quants, scale, inputs):
@@ -115,7 +113,6 @@ def matmul_8bit_fast(quants, scale, inputs):
             out_specs=pl.BlockSpec(
                 lambda i, j: (i, j), (block_x, block_y)
             ),
-            scratch_shapes=[pltpu.VMEM((block_x, block_y), jnp.float32)],
         ),
         out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
         compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "parallel"))),
