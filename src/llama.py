@@ -327,7 +327,7 @@ class LlamaTransformer(pz.Layer):
         )
         config.head_dim = gguf.metadata["llama.embedding_length"] // gguf.metadata["llama.attention.head_count"]
         config.parameter_dtype = jnp.bfloat16
-        config.activation_dtype = jnp.float16
+        config.activation_dtype = jnp.bfloat16  # anything for the TPU bf
         
         transformer = cls.from_config(config)
 

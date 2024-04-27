@@ -3,10 +3,11 @@ from collections import OrderedDict
 from typing import Dict, Literal, Optional, Tuple
 
 import jax
+import warnings
+from jax.experimental import pallas as pl
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
-from jaxtyping import Array, Float16, Int8
 from penzai import pz
 from penzai.toolshed import sharding_util
 
@@ -69,6 +70,33 @@ class QuantizedLinear(pz.Layer):
         return pz.chk.Wildcard("output features")
 
 
+def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref):
+    scaled = quants_ref[...].astype(jnp.float32) * scale_ref[...].astype(jnp.float32)
+    scaled = scaled.reshape(inputs_ref.shape[-1], -1)
+    result = inputs_ref[...].astype(jnp.float32) @ scaled.astype(jnp.float32)
+    outputs_ref[...] = result.astype(outputs_ref.dtype)
+
+
+def matmul_8bit_fast(quants, scale, inputs):
+    inputs = inputs.astype(jnp.bfloat16)
+    scale = scale.astype(jnp.bfloat16)
+    
+    block_x, block_y = 8, 128
+    return pl.pallas_call(
+        matmul_8bit_kernel,
+        out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
+        grid=(int(inputs.shape[0] / block_x), int(quants.shape[2] // block_y)),
+        in_specs=[
+            pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], quants.shape[1], block_y)),
+            pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], 1, block_y)),
+            pl.BlockSpec(lambda i, j: (i, 0), (block_x, inputs.shape[1])),
+        ],
+        out_specs=pl.BlockSpec(
+            lambda i, j: (i, j), (block_x, block_y)
+        ),
+    )(quants, scale, inputs)
+
+
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
 class Linear8bitTranspose(QuantizedLinear):
     scale: pz.nx.NamedArray
@@ -84,7 +112,9 @@ class Linear8bitTranspose(QuantizedLinear):
             .unwrap("in_features", "quant_group", "out_features")
             for tensor in (scale, quants)
         )
-        # TODO 8 bit kernels
+        # if inputs.shape[0] >= 16:
+        #     return matmul_8bit_fast(quants, scale, inputs)
+        warnings.warn("Using slow 8-bit matmul, inputs too small")
         weight = scale.astype(self.dtype) * quants
         weight = weight.reshape(np.prod(list(self.in_features.values())), -1)
         return inputs @ weight

@@ -29,6 +29,7 @@ def sample(llama: LlamaTransformer, tokenizer: tiktoken.Encoding,
     llama_cached, cache = LlamaKVCachingTransformer.from_uncached(llama, max_seq_len, {"batch": batch_size})
     llama_cached = jit_wrapper.Jitted(llama_cached)
 
+    @partial(jax.jit, donate_argnums=(1, 3))
     def sample(logits, tokens, cache, key):
         choices = logits.untag("vocabulary").argmax().untag("seq")[cache.cache_end_index - 1]
         tokens = pz.nx.nmap(lambda t, c: t.at[cache.cache_end_index].set(c))(tokens.untag("seq"), choices).tag("seq")
