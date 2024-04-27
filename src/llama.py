@@ -300,8 +300,8 @@ class LlamaTransformer(pz.Layer):
     @property
     def axis_name_to_mesh_name(self):
         return {
-            "neurons": "mp",
-            "kv_heads": "mp"
+            "neurons": "tp",
+            "kv_heads": "tp"
         }
 
     @property
@@ -357,9 +357,6 @@ class LlamaTransformer(pz.Layer):
         )
         
         return transformer
-
-    def inference_mode(self):
-        pass
 
 
 def main():

@@ -32,8 +32,7 @@ def make_linear(old_linear: pz.nn.Linear,
     for d in tensor_data:
         d = d.reshape(*old_linear.output_axes.values(),
                         *list(old_linear.input_axes.values())[:-1], -1, d.shape[-1])
-        d = jax.device_put(d)  # TODO replicate
-        d = pz.nx.wrap(d, *old_linear.output_axes.keys(), *old_linear.input_axes.keys(), "quant_group")
+        d = device_put_named_sharded(d, (*old_linear.output_axes.keys(), *old_linear.input_axes.keys(), "quant_group"), mesh, axis_name_to_mesh_name)
         axes = (*old_linear.input_axes.keys(), "quant_group", *old_linear.output_axes.keys())
         d = d.untag(*axes).tag(*axes)
         new_data.append(d)
@@ -85,11 +84,9 @@ def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref
                         (pl.dslice(i * block_group, block_group),
                         slice(None), slice(None)))
         scale = jnp.broadcast_to(scale.astype(jnp.float32), quants.shape)
-        quants, scale = quants.reshape(-1, quants.shape[-1]), scale.reshape(-1, scale.shape[-1])
-        scaled = jax.lax.mul(scale.astype(jnp.float32), quants.astype(jnp.float32))
-        
+        scaled = (scale.reshape(-1, scale.shape[-1]) * quants.reshape(-1, quants.shape[-1])).reshape(-1, quants.shape[-1])
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
-        result = jax.lax.dot_general(inputs.astype(jnp.float32), scaled,
+        result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), scaled.astype(jnp.bfloat16),
                                     dimension_numbers=(((1,), (0,)), ((), ())),
                                     preferred_element_type=jnp.float32)
         accum_ref[...] += result
@@ -100,7 +97,6 @@ def matmul_8bit_fast(quants, scale, inputs):
     inputs = inputs.astype(jnp.bfloat16)
     scale = scale.astype(jnp.bfloat16)
 
-    key = (inputs.shape[0], quants.shape[0], quants.shape[1], quants.shape[2])
     block_x, block_y, block_k = 256, 256, 512
     return pl.pallas_call(
         partial(matmul_8bit_kernel, block_k=block_k, quant_group_size=quants.shape[1]),
@@ -188,10 +184,22 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
     if do_transpose:
         dequantized = dequantized.T  # for jax
     dequantized = dequantized.astype(dtype).reshape(*named_shape.values())
-    # TODO replicate
-    dequantized = jax.device_put(dequantized)
-    dequantized = pz.nx.wrap(dequantized, *named_shape.keys())
+
+    dequantized = device_put_named_sharded(dequantized, named_shape.keys(), mesh, axis_name_to_mesh_name)
     return pz.nn.Parameter(
         dequantized,
         name,
     )
+
+
+def device_put_named_sharded(array, axis_names, mesh: Optional[jshard.Mesh], axis_name_to_mesh_name: Optional[Dict[str, str]]):
+    array = jax.device_put(array)
+    array = pz.nx.wrap(array, *axis_names)
+    if mesh is None or axis_name_to_mesh_name is None:
+        return array
+    return sharding_util.name_to_name_device_put(
+        array,
+        mesh,
+        axis_name_to_mesh_name=axis_name_to_mesh_name,
+    )
+
