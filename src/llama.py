@@ -310,11 +310,13 @@ class LlamaTransformer(pz.Layer):
 
     @classmethod
     def from_pretrained(cls, gguf_path: os.PathLike, device_map="auto"):
-        if device_map != "auto":
-            raise ValueError(
-                "I'm actually not sure yet how device_map will be handled, " \
-                "this is just to mimic HF's API.")
-        mesh = jshard.Mesh(np.asarray(jax.devices()).reshape((1, 1, -1)), axis_names=("dp", "sp", "tp"))
+        if device_map == "auto":
+            mesh = jshard.Mesh(np.asarray(jax.devices()).reshape((1, 1, -1)), axis_names=("dp", "sp", "tp"))
+        elif device_map.startswith("tpu:"):
+            tpu_index = int(device_map.partition(":")[2])
+            mesh = jshard.Mesh(np.asarray(jax.devices())[tpu_index:tpu_index+1].reshape((1, 1, 1)), axis_names=("dp", "sp", "tp"))
+        else:
+            raise ValueError(f"Unknown device map {device_map}")
         
         gguf = GGUFReader(gguf_path)
         config = LlamaConfig(

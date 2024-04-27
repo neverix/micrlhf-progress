@@ -185,6 +185,7 @@ class LlamaKVCachingTransformer(pz.Layer):
             )
         )
     )
+    pz.ts.display(caching_body)
     handled_body, initial_state = pz.de.handle_local_states(
         pz.de.WithSideInputsFromInputTuple.handling(
             caching_body, tags=["cache_end_index"]
