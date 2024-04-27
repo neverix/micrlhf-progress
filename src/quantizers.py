@@ -112,8 +112,8 @@ class Linear8bitTranspose(QuantizedLinear):
             .unwrap("in_features", "quant_group", "out_features")
             for tensor in (scale, quants)
         )
-        # if inputs.shape[0] >= 16:
-        #     return matmul_8bit_fast(quants, scale, inputs)
+        if inputs.shape[0] >= 16:
+            return matmul_8bit_fast(quants, scale, inputs)
         warnings.warn("Using slow 8-bit matmul, inputs too small")
         weight = scale.astype(self.dtype) * quants
         weight = weight.reshape(np.prod(list(self.in_features.values())), -1)
