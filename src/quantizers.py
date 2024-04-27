@@ -98,7 +98,10 @@ def matmul_8bit_fast(quants, scale, inputs):
     scale = scale.astype(jnp.bfloat16)
 
     block_x, block_y, block_k = 256, 256, 512
-    return pl.pallas_call(
+    og_shape = inputs.shape
+    inputs = jnp.pad(inputs, ((0, max(0, block_x - inputs.shape[0])), (0, 0)))
+
+    result = pl.pallas_call(
         partial(matmul_8bit_kernel, block_k=block_k, quant_group_size=quants.shape[1]),
         grid_spec=pltpu.PrefetchScalarGridSpec(
             num_scalar_prefetch=0,
@@ -116,6 +119,7 @@ def matmul_8bit_fast(quants, scale, inputs):
         out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
         compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "parallel"))),
     )(quants, scale, inputs)
+    return result[:og_shape[0]]
 
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
@@ -133,7 +137,7 @@ class Linear8bitTranspose(QuantizedLinear):
             .unwrap("in_features", "quant_group", "out_features")
             for tensor in (scale, quants)
         )
-        if inputs.shape[0] >= 16:
+        if inputs.shape[0] >= 16 or True:
             return matmul_8bit_fast(quants, scale, inputs)
         warnings.warn("Using slow 8-bit matmul, inputs too small")
         weight = scale.astype(self.dtype) * quants
