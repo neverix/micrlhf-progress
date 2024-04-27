@@ -72,13 +72,16 @@ class Linear8bitTranspose(QuantizedLinear):
 
     def quant_linear(self, inputs: jnp.ndarray) -> jnp.ndarray:
         scale, quants = self.scale, self.quants
-        scale = pz.nx.nmap(jnp.ravel)(scale.untag(*(k for k in scale.named_shape.keys() if k != "quant_group"))
-                                      ).tag("quant_groups").unwrap("quant_groups", "quant_group")
-        quants = pz.nx.nmap(jnp.ravel)(quants.untag(*(k for k in quants.named_shape.keys() if k != "quant_group"))
-                                      ).tag("quant_groups").unwrap("quant_groups", "quant_group")
+        scale, quants = (
+            pz.nx.nmap(jnp.ravel)(
+                pz.nx.nmap(jnp.ravel)(tensor.untag(*self.in_features.keys())).tag("in_features")
+            .untag(*self.out_features.keys())).tag("out_features")
+            .unwrap("in_features", "quant_group", "out_features")
+            for tensor in (scale, quants)
+        )
         # TODO 8 bit kernels
         weight = scale.astype(self.dtype) * quants
-        weight = weight.reshape(-1, np.prod(list(self.in_features.values()))).T
+        weight = weight.reshape(np.prod(list(self.in_features.values())), -1)
         return inputs @ weight
 
 
