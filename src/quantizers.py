@@ -74,7 +74,7 @@ def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref):
     quants = quants_ref[...]
     scale = jnp.broadcast_to(scale_ref[...].astype(jnp.float32), quants.shape).astype(jnp.bfloat16)
     quants, scale = quants.reshape(-1, quants.shape[-1]), scale.reshape(-1, scale.shape[-1])
-    scaled = jax.lax.mul(scale, quants.astype(jnp.bfloat16))
+    scaled = jax.lax.mul(scale.astype(jnp.float32), quants.astype(jnp.float32))
     result = jax.lax.dot_general(inputs_ref[...], scaled, dimension_numbers=(((1,), (0,)), ((), ())), preferred_element_type=jnp.float32)
     outputs_ref[...] = result.astype(outputs_ref.dtype)
 
@@ -83,7 +83,7 @@ def matmul_8bit_fast(quants, scale, inputs):
     inputs = inputs.astype(jnp.bfloat16)
     scale = scale.astype(jnp.bfloat16)
 
-    block_x, block_y = 64, 128
+    block_x, block_y = 16, 128
     return pl.pallas_call(
         matmul_8bit_kernel,
         out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
