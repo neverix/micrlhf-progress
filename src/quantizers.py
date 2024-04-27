@@ -1,9 +1,10 @@
 import dataclasses
+import warnings
 from collections import OrderedDict
 from typing import Dict, Literal, Optional, Tuple
 
 import jax
-import warnings
+import jaxlib
 from jax.experimental import pallas as pl
 import jax.numpy as jnp
 import jax.sharding as jshard
@@ -72,7 +73,7 @@ class QuantizedLinear(pz.Layer):
 
 def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref):
     quants = quants_ref[...]
-    scale = jnp.broadcast_to(scale_ref[...].astype(jnp.float32), quants.shape)  # .astype(jnp.bfloat16)
+    scale = jnp.broadcast_to(scale_ref[...].astype(jnp.float32), quants.shape)
     quants, scale = quants.reshape(-1, quants.shape[-1]), scale.reshape(-1, scale.shape[-1])
     scaled = jax.lax.mul(scale.astype(jnp.float32), quants.astype(jnp.float32))
     result = jax.lax.dot_general(inputs_ref[...].astype(jnp.float32), scaled,
@@ -85,17 +86,10 @@ def matmul_8bit_fast(quants, scale, inputs):
     inputs = inputs.astype(jnp.bfloat16)
     scale = scale.astype(jnp.bfloat16)
 
-    block_x, block_y = 24, 128
-    while True:
-        input_vmem = (block_x + 8) * inputs.shape[-1] * 4
-        # quants, scale, weight
-        weight_vmem = np.prod(quants.shape[:2]) * block_y * 4 * 3
-        output_vmem = (block_x + 8) * block_y * (4 + 2)
-        total_vmem = input_vmem + weight_vmem + output_vmem
-        max_vmem = 16e6
-        if total_vmem > max_vmem:
-            break
-        block_x += 8
+    key = (inputs.shape[0], quants.shape[0], quants.shape[1], quants.shape[2])
+    block_x, block_y = 128, 128
+    if inputs.shape[-1] > 4096:
+        block_x = 24
     return pl.pallas_call(
         matmul_8bit_kernel,
         out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
@@ -108,6 +102,13 @@ def matmul_8bit_fast(quants, scale, inputs):
         out_specs=pl.BlockSpec(
             lambda i, j: (i, j), (block_x, block_y)
         ),
+        # grid_spec=pltpu.PrefetchScalarGridSpec(
+        #     num_scalar_prefetch=0,
+        #     grid=grid,
+        #     in_specs=in_specs,
+        #     out_specs=out_specs,
+        #     scratch_shapes=scratch_shapes,
+        # ),
         compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "parallel"))),
     )(quants, scale, inputs)
 
