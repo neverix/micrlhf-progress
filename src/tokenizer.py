@@ -9,10 +9,16 @@ from .gguf import GGUFReader
 
 def load_tokenizer(gguf_path: os.PathLike):
     gguf = GGUFReader(gguf_path)
-    tokenizer_keys = ["tokens", "scores", "token_type", "merges", "bos_token_id"]
-    tokenizer_data = {k: gguf.gguf_metadata[f"tokenizer.ggml.{k}"] for k in tokenizer_keys}
-    bos_id = tokenizer_data["bos_token_id"]
-    normal, special = tokenizer_data["tokens"][:bos_id], tokenizer_data["tokens"][bos_id:]
+    tokenizer_keys = ["tokens", "scores", "token_type", "merges", "bos_token_id", "eos_token_id"]
+    tokenizer_data = {k: gguf.metadata.get(f"tokenizer.ggml.{k}") for k in tokenizer_keys}
+    special_id = tokenizer_data["bos_token_id"]
+    if special_id <= 1:  # hack for phi
+        end_id = tokenizer_data["eos_token_id"]
+        normal, special = (
+            tokenizer_data["tokens"][special_id+1:end_id],
+            tokenizer_data["tokens"][:special_id+1] + tokenizer_data["tokens"][end_id:])
+    else:
+        normal, special = tokenizer_data["tokens"][:special_id], tokenizer_data["tokens"][special_id:]
     tokenizer = tiktoken.Encoding(
         name="tokenizer",
         pat_str=r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+",
