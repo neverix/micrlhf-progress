@@ -24,7 +24,7 @@ def make_linear(old_linear: pz.nn.Linear,
     param = old_linear.select().at_instances_of(pz.nn.UninitializedParameter).get()
     tensor_data, do_transpose = make_param(
     param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name, return_metadata=True)
-    if not do_transpose or quant_type == "fp32":
+    if not do_transpose or quant_type == "fp32" or quant_type == "fp16":
         # fall back on dequantizing the parameter on HBM
         param = make_param(param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name)
         return old_linear.select().at_instances_of(pz.nn.Parameter).apply(lambda p: param)
@@ -182,6 +182,8 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
         return tensor_data, do_transpose
 
     if quant_type == "fp32":
+        dequantized = tensor_data[0]
+    elif quant_type == "fp16":
         dequantized = tensor_data[0]
     elif quant_type == "q8_0":
         dequantized = tensor_data[0].astype(dtype) * tensor_data[1]
