@@ -9,24 +9,28 @@ GGUF_DATA_TYPE = {
     4: "uint32",
     5: "int32",
     6: "float32",
+    7: "bool",
     8: "string",
     9: "array",
     10: "uint64"
 }
 GGUF_TENSOR_TYPES = {
     0: "FP32",
+    1: "FP16",
     8: "Q8_0",
     12: "Q4_K",
     14: "Q6_K"
 }
 GGUF_BLOCK_SIZES = {
     "FP32": 4,
+    "FP16": 2,
     "Q8_0": 2 + 32,
     "Q4_K": 2 + 2 + 12 + 256 // 2,
     "Q6_K": 256 // 2 + 256 // 4 + 256 // 16 + 2,
 }
 GGUF_BLOCK_STRIDES = {
     "FP32": 1,
+    "FP16": 1,
     "Q8_0": 32,
     "Q4_K": 256,
     "Q6_K": 256,
@@ -57,6 +61,8 @@ class GGUFReader(object):
         data = self.mmap[start:end]
         if tensor["ggml_type"] == "FP32":
             return "fp32", (np.frombuffer(data, dtype=np.float32)[..., None],), tensor["shape"]
+        elif tensor["ggml_type"] == "FP16":
+            return "fp16", (np.frombuffer(data, dtype=np.float16)[..., None],), tensor["shape"]
         elif tensor["ggml_type"] == "Q8_0":
             scales = np.frombuffer(data, dtype=np.float16).reshape(-1, 1 + GGUF_BLOCK_STRIDES["Q8_0"] // 2)[:, :1]
             qs = np.frombuffer(data, dtype=np.int8).reshape(-1, 2 + GGUF_BLOCK_STRIDES["Q8_0"])[:, 2:]
@@ -122,6 +128,11 @@ def read_gguf_value(f, value_type):
     elif value_type == "array":
         data_type, count = struct.unpack("<IQ", f.read(4+8))
         return [read_gguf_value(f, data_type) for _ in range(count)]
+    elif value_type == "bool":
+        # read one byte and check if it's either 0 or 1
+        byte = struct.unpack("<?", f.read(1))[0]
+        assert byte in (0, 1)
+        return byte
 
 
 def read_gguf_string(f):
