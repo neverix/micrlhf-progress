@@ -14,9 +14,12 @@ def load_tokenizer(gguf_path: os.PathLike):
     special_id = tokenizer_data["bos_token_id"]
     if special_id <= 1:  # hack for phi
         end_id = tokenizer_data["eos_token_id"]
-        normal, special = (
-            tokenizer_data["tokens"][special_id+1:end_id],
-            tokenizer_data["tokens"][:special_id+1] + tokenizer_data["tokens"][end_id:])
+        if end_id <= 2:  # hack for tinyllama
+            normal, special = tokenizer_data["tokens"][end_id+1:], tokenizer_data["tokens"][:end_id+1]
+        else:
+            normal, special = (
+                tokenizer_data["tokens"][special_id+1:end_id],
+                tokenizer_data["tokens"][:special_id+1] + tokenizer_data["tokens"][end_id:])
     else:
         normal, special = tokenizer_data["tokens"][:special_id], tokenizer_data["tokens"][special_id:]
     tokenizer = tiktoken.Encoding(

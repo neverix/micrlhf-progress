@@ -320,7 +320,7 @@ class LlamaTransformer(pz.Layer):
         
         gguf = GGUFReader(gguf_path)
         config = LlamaConfig(
-            vocab_size=gguf.metadata["llama.vocab_size"],
+            vocab_size=gguf.metadata.get("llama.vocab_size", 32_000),
             hidden_size=gguf.metadata["llama.embedding_length"],
             intermediate_size=gguf.metadata["llama.feed_forward_length"],
             num_layers=gguf.metadata["llama.block_count"],
