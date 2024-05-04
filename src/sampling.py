@@ -8,6 +8,7 @@ import tiktoken
 from penzai import pz
 from penzai.toolshed import jit_wrapper
 from tqdm.auto import trange
+from transformers import AutoTokenizer
 
 from src.caching_llama import LlamaKVCachingInputs, LlamaKVCachingTransformer
 from src.llama import LlamaTransformer
@@ -69,11 +70,11 @@ def sample(llama: LlamaTransformer, tokenizer: tiktoken.Encoding,
 
 
 def main(
-    filename = "models/Meta-Llama-3-8B-Instruct.Q8_0.gguf",
-    prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>Hello<|eot_id|><|start_header_id|>assistant<|end_header_id|>Hi,",
+    filename = "models/phi-3-16.gguf",
+    # prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>Hello<|eot_id|><|start_header_id|>assistant<|end_header_id|>Hi,",
+    prompt = "<s><|system|>You are an assistant.</s><|user|>Hello!</s><|assistant|>Hi,",
 ):
-    tokenizer = load_tokenizer(filename)
-    tokens = tokenizer.encode(prompt)
+    tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
     llama = LlamaTransformer.from_pretrained(filename)
     print(sample(llama, tokenizer, prompt))
     print(sample(llama, tokenizer, prompt))

@@ -9,7 +9,7 @@ import numpy as np
 from penzai import pz  # ez
 
 from .gguf import GGUFReader
-from .quantizers import make_param, make_linear
+from .quantizers import make_linear, make_param
 
 
 @dataclasses.dataclass

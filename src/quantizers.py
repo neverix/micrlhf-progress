@@ -1,15 +1,15 @@
 import dataclasses
 import warnings
 from collections import OrderedDict
+from functools import partial
 from typing import Dict, Literal, Optional, Tuple
 
 import jax
-from functools import partial
-from jax.experimental import pallas as pl
-from jax.experimental.pallas import tpu as pltpu
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
+from jax.experimental import pallas as pl
+from jax.experimental.pallas import tpu as pltpu
 from penzai import pz
 from penzai.toolshed import sharding_util
 
