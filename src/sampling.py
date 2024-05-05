@@ -5,17 +5,17 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import tiktoken
+import transformers
 from penzai import pz
 from penzai.toolshed import jit_wrapper
 from tqdm.auto import trange
-from transformers import AutoTokenizer
 
 from src.caching_llama import LlamaKVCachingInputs, LlamaKVCachingTransformer
 from src.llama import LlamaTransformer
 from src.tokenizer import load_tokenizer
 
 
-def sample(llama: LlamaTransformer, tokenizer: tiktoken.Encoding,
+def sample(llama: LlamaTransformer, tokenizer : tiktoken.Encoding | transformers.PreTrainedTokenizerBase,
             # TODO: multiple prompts and left padding
            prompt: str,
            batch_size: int = 4,
@@ -74,9 +74,8 @@ def main(
     # prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>Hello<|eot_id|><|start_header_id|>assistant<|end_header_id|>Hi,",
     prompt = "<s><|system|>You are an assistant.</s><|user|>Hello!</s><|assistant|>Hi,",
 ):
-    tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
+    tokenizer = transformers.AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
     llama = LlamaTransformer.from_pretrained(filename)
-    print(sample(llama, tokenizer, prompt))
     print(sample(llama, tokenizer, prompt))
 
 

@@ -6,10 +6,12 @@ import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
+from jax import sharding as jshard
 from penzai import pz  # ez
 
 from .gguf import GGUFReader
 from .quantizers import make_linear, make_param
+from .sharding import ConstrainedSharding, WithConstantSideInputsNonPytree
 
 
 @dataclasses.dataclass
@@ -186,6 +188,7 @@ class LlamaBlock(pz.nn.Sequential):
     @classmethod
     def from_config(cls, config: LlamaConfig):
         return cls([
+            ConstrainedSharding.from_config(),
             pz.nn.Residual(pz.nn.Sequential([
                 pz.nn.add_parameter_prefix(
                     "pre_attn_norm",
@@ -199,6 +202,7 @@ class LlamaBlock(pz.nn.Sequential):
                     "attn", LlamaAttention.from_config(config),
                 ),
             ])),
+            ConstrainedSharding.from_config(),
             pz.nn.Residual(pz.nn.Sequential([
                 pz.nn.add_parameter_prefix(
                     "pre_mlp_norm",
@@ -212,6 +216,7 @@ class LlamaBlock(pz.nn.Sequential):
                     "mlp", LlamaMLP.from_config(config.hidden_size, config.intermediate_size, config.parameter_dtype),
                 ),
             ])),
+            ConstrainedSharding.from_config(),
         ])
 
 
@@ -333,6 +338,13 @@ class LlamaTransformer(pz.Layer):
         
         transformer = cls.from_config(config)
 
+        transformer = transformer.select().at_instances_of(ConstrainedSharding).apply(
+            lambda cs: WithConstantSideInputsNonPytree.handling(
+                cs,
+                {"axis_name_to_mesh_name": transformer.axis_name_to_mesh_name, "mesh": mesh}
+            )
+        )
+
         param_mapping = {
             "embed.embeddings": "token_embd.weight",
             **{f"blocks.{i}.pre_attn_norm.scale.weights": f"blk.{i}.attn_norm.weight" for i in range(config.num_layers)},
@@ -357,7 +369,7 @@ class LlamaTransformer(pz.Layer):
             lambda param: make_param(param, *gguf[param_mapping[param.name]],
                                      mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name)
         )
-        
+
         return transformer
 
 
