@@ -1,12 +1,12 @@
 # pretty much copied from https://github.com/google-deepmind/penzai/blob/main/penzai/example_models/gemma/model_core.py
 import dataclasses
 import os
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
-from jax import sharding as jshard
 from penzai import pz  # ez
 
 from .gguf import GGUFReader
@@ -241,6 +241,7 @@ class LlamaInputs(pz.Struct):
 class LlamaTransformer(pz.Layer):
     config: LlamaConfig = dataclasses.field(metadata={"pytree_node": False})
     body: pz.LayerLike
+    mesh: Optional[jshard.Mesh] = dataclasses.field(metadata={"pytree_node": False}, default=None)
     
     @pz.checked_layer_call
     def __call__(self, inputs: LlamaInputs) -> pz.nx.NamedArray:
@@ -257,7 +258,7 @@ class LlamaTransformer(pz.Layer):
         return pz.chk.Wildcard("unnormalized logits")
     
     @classmethod
-    def from_config(cls, config: LlamaConfig) -> "LlamaTransformer":
+    def from_config(cls, config: LlamaConfig, mesh: Optional[jshard.Mesh] = None) -> "LlamaTransformer":
         return cls(
             config=config,
             body=pz.de.WithSideInputsFromInputTuple.handling(
@@ -299,7 +300,8 @@ class LlamaTransformer(pz.Layer):
                     )
                 ]),
                 tags=["positions", "attn_mask"],
-            )
+            ),
+            mesh=mesh,
         )
 
     @property
@@ -336,7 +338,7 @@ class LlamaTransformer(pz.Layer):
         config.parameter_dtype = jnp.bfloat16
         config.activation_dtype = jnp.bfloat16  # anything for the TPU bf
         
-        transformer = cls.from_config(config)
+        transformer = cls.from_config(config, mesh=mesh)
 
         transformer = transformer.select().at_instances_of(ConstrainedSharding).apply(
             lambda cs: WithConstantSideInputsNonPytree.handling(
