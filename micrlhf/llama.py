@@ -307,8 +307,8 @@ class LlamaTransformer(pz.Layer):
     @property
     def axis_name_to_mesh_name(self):
         return {
-            "neurons": "tp",
-            "kv_heads": "tp"
+            "neurons": "mp",
+            "kv_heads": "mp"
         }
 
     @property
@@ -318,10 +318,10 @@ class LlamaTransformer(pz.Layer):
     @classmethod
     def from_pretrained(cls, gguf_path: os.PathLike, device_map="auto"):
         if device_map == "auto":
-            mesh = jshard.Mesh(np.asarray(jax.devices()).reshape((1, 1, -1)), axis_names=("dp", "sp", "tp"))
+            mesh = jshard.Mesh(np.asarray(jax.devices()).reshape((1, 1, -1)), axis_names=("dp", "sp", "mp"))
         elif device_map.startswith("tpu:"):
             tpu_index = int(device_map.partition(":")[2])
-            mesh = jshard.Mesh(np.asarray(jax.devices())[tpu_index:tpu_index+1].reshape((1, 1, 1)), axis_names=("dp", "sp", "tp"))
+            mesh = jshard.Mesh(np.asarray(jax.devices())[tpu_index:tpu_index+1].reshape((1, 1, 1)), axis_names=("dp", "sp", "mp"))
         else:
             raise ValueError(f"Unknown device map {device_map}")
         
