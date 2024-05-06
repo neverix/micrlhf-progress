@@ -318,7 +318,7 @@ class LlamaTransformer(pz.Layer):
     @classmethod
     def from_pretrained(cls, gguf_path: os.PathLike, device_map="auto"):
         if device_map == "auto":
-            mesh = jshard.Mesh(np.asarray(jax.devices()).reshape((1, 1, -1)), axis_names=("dp", "sp", "mp"))
+            mesh = jshard.Mesh(np.asarray(jax.devices()).reshape((-1, 1, 1)), axis_names=("dp", "sp", "mp"))
         elif device_map.startswith("tpu:"):
             tpu_index = int(device_map.partition(":")[2])
             mesh = jshard.Mesh(np.asarray(jax.devices())[tpu_index:tpu_index+1].reshape((1, 1, 1)), axis_names=("dp", "sp", "mp"))
