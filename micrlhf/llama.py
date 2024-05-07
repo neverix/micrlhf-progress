@@ -316,9 +316,15 @@ class LlamaTransformer(pz.Layer):
         return LlamaInputs
 
     @classmethod
-    def from_pretrained(cls, gguf_path: os.PathLike, device_map="auto"):
-        if device_map == "auto":
-            mesh = jshard.Mesh(np.asarray(jax.devices()).reshape((-1, 1, 1)), axis_names=("dp", "sp", "mp"))
+    def from_pretrained(cls, gguf_path: os.PathLike, device_map="auto", extract_layer=None):
+        if device_map.startswith("auto"):
+            _, *parts = device_map.split(":")
+            mp = 1
+            for part in parts:
+                if part.startswith("mp="):
+                    mp = int(part.partition("=")[2])
+                # TODO SP support
+            mesh = jshard.Mesh(np.asarray(jax.devices()).reshape((-1, 1, mp)), axis_names=("dp", "sp", "mp"))
         elif device_map.startswith("tpu:"):
             tpu_index = int(device_map.partition(":")[2])
             mesh = jshard.Mesh(np.asarray(jax.devices())[tpu_index:tpu_index+1].reshape((1, 1, 1)), axis_names=("dp", "sp", "mp"))
@@ -346,6 +352,13 @@ class LlamaTransformer(pz.Layer):
                 {"axis_name_to_mesh_name": transformer.axis_name_to_mesh_name, "mesh": mesh}
             )
         )
+        
+        if extract_layer is not None:
+            assert isinstance(extract_layer, int)
+            transformer = transformer.select().at_instances_of(LlamaBlock).apply_with_selected_index(
+                lambda i, x: x if i < extract_layer else pz.nn.Identity()
+            )
+            transformer = transformer.select().at_instances_of(pz.nn.EmbeddingDecode).apply(lambda _: pz.nn.Identity())
 
         param_mapping = {
             "embed.embeddings": "token_embd.weight",
