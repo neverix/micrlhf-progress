@@ -308,7 +308,9 @@ class LlamaTransformer(pz.Layer):
     def axis_name_to_mesh_name(self):
         return {
             "neurons": "mp",
-            "kv_heads": "mp"
+            "kv_heads": "mp",
+            "seq": "sp",
+            "batch": "dp",
         }
 
     @property
@@ -345,13 +347,7 @@ class LlamaTransformer(pz.Layer):
         config.activation_dtype = jnp.bfloat16  # anything for the TPU bf
         
         transformer = cls.from_config(config, mesh=mesh)
-
-        transformer = transformer.select().at_instances_of(ConstrainedSharding).apply(
-            lambda cs: WithConstantSideInputsNonPytree.handling(
-                cs,
-                {"axis_name_to_mesh_name": transformer.axis_name_to_mesh_name, "mesh": mesh}
-            )
-        )
+        transformer = transformer.handle_sharding()
         
         if extract_layer is not None:
             assert isinstance(extract_layer, int)
@@ -386,6 +382,14 @@ class LlamaTransformer(pz.Layer):
         )
 
         return transformer
+
+    def handle_sharding(self, mod=ConstrainedSharding):
+        return self.select().at_instances_of(mod).apply(
+            lambda cs: WithConstantSideInputsNonPytree.handling(
+                cs,
+                {"axis_name_to_mesh_name": self.axis_name_to_mesh_name, "mesh": self.mesh}
+            )
+        )
 
 
 def main():
