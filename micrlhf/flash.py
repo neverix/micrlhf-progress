@@ -1,9 +1,9 @@
 import dataclasses
 
 import jax
-import jax.numpy as jnp
 import jax.experimental.pallas.ops.tpu.flash_attention
 import jax.experimental.shard_map
+import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 from penzai import pz
 
@@ -75,10 +75,10 @@ class LlamaFlashAttention(pz.nn.Attention):
                None)),
             check_rep=False)(q, k, v, ab),
         )(q, k, v, ab)
-        
+
         output = o.tag("batch", self.head_axis, self.seq_axis, self.projection_axis)
         output = self.out_proj(output)
-        
+
         return output
 
     @classmethod
