@@ -66,8 +66,11 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
         llama_cached, cache = llama
     else:
         llama_cached, cache = LlamaKVCachingTransformer.from_uncached(llama, max_seq_len, {"batch": batch_size})
-        llama_cached = jit_wrapper.Jitted(llama_cached)
-    base_cache = cache
+    if return_model:
+        llama_base = llama_cached
+    if return_model:
+        cache_base = cache
+    llama_cached = jit_wrapper.Jitted(llama_cached)
 
     # prefill
     base_inputs = LlamaKVCachingInputs.from_basic_subsegments(tokens, cache)
@@ -89,7 +92,7 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
 
     texts = [tokenizer.decode(sequence) for sequence in tokens.untag("batch", "seq").data_array]
     if return_model:
-        return texts, (llama_cached, base_cache)
+        return texts, (llama_base, cache_base)
     else:
         return texts
 

@@ -55,7 +55,7 @@ class GGUFReader(object):
         return iter(self.gguf_tensors)
 
     def __getitem__(self, key):
-        assert key in self.gguf_tensors
+        assert key in self.gguf_tensors, f"Key {key} not found"
         tensor = self.gguf_tensors[key]
         start, end = tensor["offset"], tensor["offset"] + tensor["size"]
         data = self.mmap[start:end]
