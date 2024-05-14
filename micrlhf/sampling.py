@@ -1,3 +1,4 @@
+import random
 import dataclasses
 from collections import OrderedDict
 from functools import partial
@@ -17,6 +18,34 @@ from micrlhf.caching_llama import (LlamaKVCachingInputs,
 from micrlhf.llama import LlamaTransformer
 from micrlhf.tokenizer import load_tokenizer
 
+
+@partial(jax.jit, donate_argnums=(1, 3), static_argnums=(4,))
+def sample_logits(logits, tokens, cache, key, do_sample=False):
+    if do_sample:
+        key_sample, key = jax.random.split(key)
+        choices = pz.nx.nmap(lambda l: jax.random.categorical(key_sample, l))(
+            logits.untag("batch", "vocabulary")).tag("batch").untag("seq")[cache.cache_end_index - 1]
+    else:
+        choices = logits.untag("vocabulary").argmax().untag("seq")[cache.cache_end_index - 1]
+    tokens = pz.nx.nmap(lambda t, c: t.at[cache.cache_end_index].set(c))(tokens.untag("seq"), choices).tag("seq")
+    return choices, tokens, key
+
+
+@partial(jax.jit, donate_argnums=(1, 2, 3, 4), static_argnums=(7,))
+def sample_step(llama_cached, advanced, tokens, cache, key, base_mask, initial_length, do_sample):
+    batch_size = tokens.named_shape["batch"]
+    max_seq_len = tokens.named_shape["seq"]
+    inputs = LlamaKVCachingInputs(
+        tokens=advanced[None].tag("seq"),
+        positions=pz.nx.full({"batch": batch_size, "seq": 1}, cache.cache_end_index, jnp.int32),
+        attention_mask=((pz.nx.wrap(cache.cache_end_index) >= pz.nx.arange("kv_seq", max_seq_len, dtype=jnp.int32))
+                        & (base_mask | (pz.nx.arange("seq", max_seq_len, dtype=jnp.int32) >= initial_length)
+                            ).untag("seq").tag("kv_seq"))[None].tag("seq"),
+        sampling_state=cache
+    )
+    logits, cache = llama_cached(inputs)
+    advanced, tokens, key = sample_logits(logits, tokens, cache, key, do_sample)
+    return advanced, tokens, cache, key
 
 def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, LlamaKVCachingState]],
            tokenizer : tiktoken.Encoding | transformers.PreTrainedTokenizerBase,
@@ -38,16 +67,7 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
     else:
         llama_cached, cache = LlamaKVCachingTransformer.from_uncached(llama, max_seq_len, {"batch": batch_size})
         llama_cached = jit_wrapper.Jitted(llama_cached)
-
-    def sample(logits, tokens, cache, key):
-        if not do_sample:
-            key_sample, key = jax.random.split(key)
-            choices = pz.nx.nmap(lambda l: jax.random.categorical(key_sample, l))(
-                logits.untag("batch", "vocabulary")).tag("batch").untag("seq")[cache.cache_end_index - 1]
-        else:
-            choices = logits.untag("vocabulary").argmax().untag("seq")[cache.cache_end_index - 1]
-        tokens = pz.nx.nmap(lambda t, c: t.at[cache.cache_end_index].set(c))(tokens.untag("seq"), choices).tag("seq")
-        return choices, tokens, key
+    base_cache = cache
 
     # prefill
     base_inputs = LlamaKVCachingInputs.from_basic_subsegments(tokens, cache)
@@ -58,31 +78,18 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
     logits, cache = llama_cached(base_inputs)
     cache = dataclasses.replace(cache, cache_end_index=initial_length)
 
-    key = jax.random.key(0)
+    key = jax.random.key(random.randrange(0, 2**32))
     # generate
-    advanced, tokens, key = sample(logits, tokens, cache, key)
-    
-    @partial(jax.jit, donate_argnums=(1, 2, 3, 4))
-    def sample_step(llama_cached, advanced, tokens, cache, key):
-        inputs = LlamaKVCachingInputs(
-            tokens=advanced[None].tag("seq"),
-            positions=pz.nx.full({"batch": batch_size, "seq": 1}, cache.cache_end_index, jnp.int32),
-            attention_mask=((pz.nx.wrap(cache.cache_end_index) >= pz.nx.arange("kv_seq", max_seq_len, dtype=jnp.int32))
-                            & (base_mask | (pz.nx.arange("seq", max_seq_len, dtype=jnp.int32) >= initial_length)
-                               ).untag("seq").tag("kv_seq"))[None].tag("seq"),
-            sampling_state=cache
-        )
-        logits, cache = llama_cached(inputs)
-        advanced, tokens, key = sample(logits, tokens, cache, key)
-        return advanced, tokens, cache, key
+    advanced, tokens, key = sample_logits(logits, tokens, cache, key, do_sample=do_sample)
 
     for _ in (bar := trange(max_seq_len)):
-       advanced, tokens, cache, key = sample_step(llama_cached, advanced, tokens, cache, key)
+        advanced, tokens, cache, key = sample_step(llama_cached, advanced, tokens, cache, key,
+                                                   base_mask, initial_length, do_sample=do_sample)
         # bar.set_description(tokenizer.decode(tokens.untag("batch", "seq").data_array[0]))
 
     texts = [tokenizer.decode(sequence) for sequence in tokens.untag("batch", "seq").data_array]
     if return_model:
-        return texts, (llama_cached, cache)
+        return texts, (llama_cached, base_cache)
     else:
         return texts
 
