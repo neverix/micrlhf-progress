@@ -15,6 +15,7 @@ penzai = "^0.1.0"
 jax = {version = "^0.4.26", extras = ["tpu"]}
 tiktoken = "^0.6.0"
 tqdm = "^4.66.2"
+datasets = "^2.19.1"
 
 [[tool.poetry.source]]
 name = "google-libtpu"
