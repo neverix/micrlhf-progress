@@ -28,6 +28,7 @@ priority = "supplemental"
 ipykernel = "^6.29.4"
 isort = "^5.13.2"
 nbconvert = "^7.16.4"
+transformers = "^4.40.2"
 
 [build-system]
 requires = ["poetry-core"]
