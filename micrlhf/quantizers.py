@@ -20,10 +20,11 @@ def make_linear(old_linear: pz.nn.Linear,
                 shape: Tuple[int],
                 mesh: Optional[jshard.Mesh] = None,
                 axis_name_to_mesh_name: Optional[Dict[str, str]] = None,
+                **kwargs
                 ) -> pz.nn.Linear:
     param = old_linear.select().at_instances_of(pz.nn.UninitializedParameter).get()
     tensor_data, do_transpose = make_param(
-    param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name, return_metadata=True)
+        param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name, return_metadata=True, **kwargs)
     if not do_transpose or quant_type == "fp32" or quant_type == "fp16":
         # fall back on dequantizing the parameter on HBM
         param = make_param(param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name)
@@ -157,6 +158,7 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
                axis_name_to_mesh_name: Optional[Dict[str, str]] = None,
                return_metadata: bool = False,
                is_transposed: bool = False,
+               transpose_rotary: bool = True,
                ) -> pz.nn.Parameter:
     name = uninitialized_param.name 
     named_shape = uninitialized_param.value_structure.named_shape
@@ -164,7 +166,7 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
 
     assert np.prod(shape) == np.prod(list(named_shape.values()))
     
-    if ".attn.query" in name or ".attn.key" in name:
+    if (".attn.query" in name or ".attn.key" in name) and transpose_rotary:
         new_data = []
         for d in tensor_data:
             # llama.cpp does rotary differently, i think

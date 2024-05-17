@@ -29,6 +29,7 @@ class LlamaConfig:
     parameter_dtype: jax.typing.DTypeLike = jnp.bfloat16
     activation_dtype: jax.typing.DTypeLike = jnp.float16
     act_fn: Literal["gelu", "silu"] = "silu"
+    resid_rescale: float = 1.0
 
     @property
     def projection_dim(self):
@@ -280,6 +281,9 @@ class LlamaTransformer(pz.Layer):
                             )
                         )
                     ),
+                    pz.nn.ConstantRescale(
+                        by=config.resid_rescale
+                    ),
                     pz.nn.add_parameter_prefix(
                         "blocks",
                         pz.nn.Sequential([
@@ -360,6 +364,8 @@ class LlamaTransformer(pz.Layer):
             num_key_value_heads=gguf.metadata["llama.attention.head_count_kv"],
             act_fn={None: "silu", "gemma": "gelu"}[from_type],
         )
+        if from_type == "gemma":
+            config.resid_rescale = jnp.sqrt(config.hidden_size).astype(config.activation_dtype)
         config.head_dim = gguf.metadata["llama.embedding_length"] // gguf.metadata["llama.attention.head_count"]
         config.parameter_dtype = jnp.bfloat16
         config.activation_dtype = jnp.bfloat16  # anything for the TPU bf
@@ -389,20 +395,20 @@ class LlamaTransformer(pz.Layer):
             "unembed.embeddings": {None: "output.weight", "gemma": "token_embd.weight"}[from_type],
         }
         is_transposed = {k: False for k in param_mapping}
-        if from_type == "gemma":
-            is_transposed["embed.embeddings"] = False
 
         if not load_eager:
             # assume no linears are transposed
             transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
                 lambda linear: make_linear(linear, *gguf[param_mapping[
                     linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
-                    ]], mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name)
+                    ]], mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name,
+                                           transpose_rotary=from_type != "gemma")
             )
         transformer = transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
             lambda param: make_param(param, *gguf[param_mapping[param.name]],
                                      mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name,
-                                     is_transposed=is_transposed[param.name])
+                                     is_transposed=is_transposed[param.name],
+                                     transpose_rotary=from_type != "gemma")
         )
 
         return transformer
