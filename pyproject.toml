@@ -16,12 +16,18 @@ jax = {version = "^0.4.26", extras = ["tpu"]}
 tiktoken = "^0.6.0"
 tqdm = "^4.66.2"
 datasets = "^2.19.1"
+orbax = "^0.1.9"
+torch = {version = "^2.2.2+cpu", source = "torch-cpu"}
 
 [[tool.poetry.source]]
 name = "google-libtpu"
 url = "https://storage.googleapis.com/jax-releases/libtpu_releases.html"
 priority = "supplemental"
 
+[[tool.poetry.source]]
+name = "torch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "supplemental"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -30,6 +36,9 @@ isort = "^5.13.2"
 nbconvert = "^7.16.4"
 transformers = "^4.40.2"
 matplotlib = "^3.8.4"
+kagglehub = "^0.2.5"
+ipywidgets = "^8.1.2"
+orbax = "^0.1.9"
 
 [build-system]
 requires = ["poetry-core"]

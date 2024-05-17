@@ -1,13 +1,16 @@
 # pretty much copied from https://github.com/google-deepmind/penzai/blob/main/penzai/example_models/gemma/model_core.py
 import dataclasses
 import os
-from typing import Optional
+from typing import Optional, Literal, Any
+import itertools
 
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
 from penzai import pz  # ez
+from penzai.toolshed import sharding_util
+import orbax.checkpoint
 
 from .gguf import GGUFReader
 from .quantizers import make_linear, make_param
@@ -25,6 +28,7 @@ class LlamaConfig:
     num_layers: int = 32
     parameter_dtype: jax.typing.DTypeLike = jnp.bfloat16
     activation_dtype: jax.typing.DTypeLike = jnp.float16
+    act_fn: Literal["gelu", "silu"] = "silu"
 
     @property
     def projection_dim(self):
@@ -34,7 +38,7 @@ class LlamaConfig:
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
 class LlamaMLP(pz.nn.Sequential):
     @classmethod
-    def from_config(cls, embedding_size: int, intermediate_size: int, dtype: jax.typing.DTypeLike):
+    def from_config(cls, cfg: LlamaConfig):
         return cls([
             pz.nn.BranchAndMultiplyTogether(
                     branches=[
@@ -44,20 +48,23 @@ class LlamaMLP(pz.nn.Sequential):
                             pz.nn.add_parameter_prefix(
                                 "gate_proj",
                                 pz.nn.Linear.from_config(
-                                    input_axes={"embedding": embedding_size},
-                                    output_axes={"neurons": intermediate_size},
-                                    dtype=dtype,
+                                    input_axes={"embedding": cfg.hidden_size},
+                                    output_axes={"neurons": cfg.intermediate_size},
+                                    dtype=cfg.parameter_dtype,
                                 ),
                             ),
-                            pz.nn.Elementwise(jax.nn.silu),
+                            pz.nn.Elementwise(dict(
+                                silu=jax.nn.silu,
+                                gelu=jax.nn.gelu,
+                            )[cfg.act_fn]),
                         ],
                     ),
                     pz.nn.add_parameter_prefix(
                         "up_proj",
                         pz.nn.Linear.from_config(
-                            input_axes={"embedding": embedding_size},
-                            output_axes={"neurons": intermediate_size},
-                            dtype=dtype,
+                            input_axes={"embedding": cfg.hidden_size},
+                            output_axes={"neurons": cfg.intermediate_size},
+                            dtype=cfg.parameter_dtype,
                         ),
                     )
                 ]
@@ -65,9 +72,9 @@ class LlamaMLP(pz.nn.Sequential):
             pz.nn.add_parameter_prefix(
                 "out_proj",
                 pz.nn.Linear.from_config(
-                    input_axes={"neurons": intermediate_size},
-                    output_axes={"embedding": embedding_size},
-                    dtype=dtype,
+                    input_axes={"neurons": cfg.intermediate_size},
+                    output_axes={"embedding": cfg.hidden_size},
+                    dtype=cfg.parameter_dtype,
                 ),
             ),
         ])
@@ -213,7 +220,7 @@ class LlamaBlock(pz.nn.Sequential):
                 ),
                 pz.nn.CastToDType(config.activation_dtype),
                 pz.nn.add_parameter_prefix(
-                    "mlp", LlamaMLP.from_config(config.hidden_size, config.intermediate_size, config.parameter_dtype),
+                    "mlp", LlamaMLP.from_config(config),
                 ),
             ])),
             ConstrainedSharding.from_config(),
@@ -318,7 +325,7 @@ class LlamaTransformer(pz.Layer):
         return LlamaInputs
 
     @classmethod
-    def from_pretrained(cls, gguf_path: os.PathLike, device_map="auto", extract_layer=None):
+    def make_mesh(cls, device_map: str):
         if device_map.startswith("auto"):
             _, *parts = device_map.split(":")
             mp = 1
@@ -332,15 +339,26 @@ class LlamaTransformer(pz.Layer):
             mesh = jshard.Mesh(np.asarray(jax.devices())[tpu_index:tpu_index+1].reshape((1, 1, 1)), axis_names=("dp", "sp", "mp"))
         else:
             raise ValueError(f"Unknown device map {device_map}")
+        return mesh
+
+    @classmethod
+    def from_pretrained(cls, gguf_path: os.PathLike,
+                        from_type: Literal[None, "gemma"] = None,
+                        device_map="auto", extract_layer=None,
+                        load_eager=False):
+        mesh = cls.make_mesh(device_map)
         
         gguf = GGUFReader(gguf_path)
+        if from_type == "gemma":
+            gguf.replace_metadata_prefix("gemma.", "llama.")
         config = LlamaConfig(
-            vocab_size=gguf.metadata.get("llama.vocab_size", 32_000),
+            vocab_size=gguf.metadata.get("llama.vocab_size", {None: 32_000, "gemma": 256_000}[from_type]),
             hidden_size=gguf.metadata["llama.embedding_length"],
             intermediate_size=gguf.metadata["llama.feed_forward_length"],
             num_layers=gguf.metadata["llama.block_count"],
             num_attention_heads=gguf.metadata["llama.attention.head_count"],
             num_key_value_heads=gguf.metadata["llama.attention.head_count_kv"],
+            act_fn={None: "silu", "gemma": "gelu"}[from_type],
         )
         config.head_dim = gguf.metadata["llama.embedding_length"] // gguf.metadata["llama.attention.head_count"]
         config.parameter_dtype = jnp.bfloat16
@@ -368,17 +386,23 @@ class LlamaTransformer(pz.Layer):
             **{f"blocks.{i}.mlp.up_proj.weights": f"blk.{i}.ffn_up.weight" for i in range(config.num_layers)},
             **{f"blocks.{i}.mlp.out_proj.weights": f"blk.{i}.ffn_down.weight" for i in range(config.num_layers)},
             "final_norm.scale.weights": "output_norm.weight",
-            "unembed.embeddings": "output.weight",           
+            "unembed.embeddings": {None: "output.weight", "gemma": "token_embd.weight"}[from_type],
         }
+        is_transposed = {k: False for k in param_mapping}
+        if from_type == "gemma":
+            is_transposed["embed.embeddings"] = False
 
-        transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
-            lambda linear: make_linear(linear, *gguf[param_mapping[
-                linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
-                ]], mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name)
-        )
+        if not load_eager:
+            # assume no linears are transposed
+            transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
+                lambda linear: make_linear(linear, *gguf[param_mapping[
+                    linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
+                    ]], mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name)
+            )
         transformer = transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
             lambda param: make_param(param, *gguf[param_mapping[param.name]],
-                                     mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name)
+                                     mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name,
+                                     is_transposed=is_transposed[param.name])
         )
 
         return transformer

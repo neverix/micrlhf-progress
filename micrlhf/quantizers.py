@@ -156,11 +156,12 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
                mesh: Optional[jshard.Mesh] = None,
                axis_name_to_mesh_name: Optional[Dict[str, str]] = None,
                return_metadata: bool = False,
+               is_transposed: bool = False,
                ) -> pz.nn.Parameter:
     name = uninitialized_param.name 
     named_shape = uninitialized_param.value_structure.named_shape
     dtype = uninitialized_param.value_structure.dtype
-    
+
     assert np.prod(shape) == np.prod(list(named_shape.values()))
     
     if ".attn.query" in name or ".attn.key" in name:
@@ -193,6 +194,8 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
     dequantized = dequantized.reshape(shape[::-1])
     if do_transpose:
         dequantized = dequantized.T  # for jax
+    if is_transposed:
+        dequantized = dequantized.T
     dequantized = dequantized.astype(dtype).reshape(*named_shape.values())
 
     dequantized = device_put_named_sharded(dequantized, named_shape.keys(), mesh, axis_name_to_mesh_name)
