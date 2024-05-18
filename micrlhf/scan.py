@@ -1,5 +1,5 @@
-from penzai import pz
 import jax
+from penzai import pz
 
 
 @pz.pytree_dataclass

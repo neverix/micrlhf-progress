@@ -1,16 +1,16 @@
 # pretty much copied from https://github.com/google-deepmind/penzai/blob/main/penzai/example_models/gemma/model_core.py
 import dataclasses
-import os
-from typing import Optional, Literal, Any
 import itertools
+import os
+from typing import Any, Literal, Optional
 
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
+import orbax.checkpoint
 from penzai import pz  # ez
 from penzai.toolshed import sharding_util
-import orbax.checkpoint
 
 from .gguf import GGUFReader
 from .quantizers import make_linear, make_param

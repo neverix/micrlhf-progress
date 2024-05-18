@@ -1,8 +1,8 @@
-import random
 import dataclasses
+import random
 from collections import OrderedDict
 from functools import partial
-from typing import Union, Tuple
+from typing import Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -12,9 +12,8 @@ from penzai import pz
 from penzai.toolshed import jit_wrapper
 from tqdm.auto import trange
 
-from micrlhf.caching_llama import (LlamaKVCachingInputs,
-                                   LlamaKVCachingTransformer,
-                                   LlamaKVCachingState)
+from micrlhf.caching_llama import (LlamaKVCachingInputs, LlamaKVCachingState,
+                                   LlamaKVCachingTransformer)
 from micrlhf.llama import LlamaTransformer
 from micrlhf.tokenizer import load_tokenizer
 

@@ -1,8 +1,11 @@
-from micrlhf.llama import LlamaBlock
-from typing import Literal
-from penzai import pz
 import dataclasses
+from typing import Literal
+
 import jax
+import jax.numpy as jnp
+from penzai import pz
+
+from micrlhf.llama import LlamaBlock
 
 
 @pz.pytree_dataclass

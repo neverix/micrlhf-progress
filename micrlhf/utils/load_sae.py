@@ -1,7 +1,7 @@
-from huggingface_hub import HfFileSystem
-from safetensors.flax import load_file
 import os
 
+from huggingface_hub import HfFileSystem
+from safetensors.flax import load_file
 
 sae_cache = {}
 def get_sae(layer=20, revision=5, idx=0):
