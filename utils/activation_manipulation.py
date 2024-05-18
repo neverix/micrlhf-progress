@@ -66,7 +66,7 @@ def ablate_direction(llama, direction):
             ]))
     return act_abl
 
-def add_vector(llama, vector, layer, scale=1.0):
+def add_vector(llama, vector, layer, scale=1.0, position="all", size_cond="all"):
     if vector.ndim == 2:
         vector = pz.nx.wrap(vector * scale, "batch", "embedding")
     else:
@@ -74,7 +74,7 @@ def add_vector(llama, vector, layer, scale=1.0):
     act_add = llama.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).apply(
         lambda x: pz.nn.Sequential(
             [
-                ActivationAddition(vector, position="all", size_cond="all"),
+                ActivationAddition(vector, position=position, size_cond=size_cond),
                 x
             ]))
     return act_add
