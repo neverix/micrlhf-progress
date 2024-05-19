@@ -4,6 +4,7 @@ memory.prof
 .venv/
 *.tar.gz
 scratch.ipynb
+nohup.out
 
 # Python gitignore
 

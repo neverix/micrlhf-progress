@@ -119,7 +119,7 @@ def get_texts(cache=cache, tokens=tokens):
 # In[33]:
 
 
-def gen(n=2_000):
+def gen(n=10_000):
     for _ in trange(n):
         for t in get_texts():
             yield {"text": t}
@@ -127,7 +127,7 @@ def gen(n=2_000):
 
 # In[34]:
 
-
+random.seed(9)
 dataset = list(gen())
 
 
@@ -141,7 +141,7 @@ ds_phi = datasets.Dataset.from_list(dataset)
 # In[ ]:
 
 
-ds_phi.push_to_hub("nev/generated-phi-format-text")
+ds_phi.push_to_hub("nev/generated-phi-format-text-2")
 
 
 # In[ ]:
