@@ -8,7 +8,6 @@ import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
-import orbax.checkpoint
 from penzai import pz  # ez
 from penzai.toolshed import sharding_util
 

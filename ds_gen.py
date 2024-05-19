@@ -83,6 +83,9 @@ import random
 
 
 def sample(logits, tokens, cache, key):
+    logits = pz.nx.nmap(lambda l, t: l - jax.nn.one_hot(t, l.shape[-1], dtype=l.dtype).sum(0)
+                        )(logits.untag("seq", "vocabulary"),
+                          tokens.untag("seq")).tag("seq", "vocabulary")
     choices = pz.nx.nmap(lambda l: jax.random.categorical(key, l))(
         logits.untag("batch", "vocabulary")).tag("batch").untag("seq")[cache.cache_end_index - 1]
     tokens = pz.nx.nmap(lambda t, c: t.at[cache.cache_end_index].set(c))(tokens.untag("seq"), choices).tag("seq")
@@ -94,7 +97,7 @@ def sample_step(llama_cached, advanced, tokens, cache, key):
     inputs = LlamaKVCachingInputs(
         tokens=advanced[None].tag("seq"),
         positions=pz.nx.full({"batch": batch_size, "seq": 1}, cache.cache_end_index, jnp.int32),
-        attention_mask=((cache.cache_end_index >= pz.nx.arange("kv_seq", max_seq_len, dtype=jnp.int32))
+        attention_mask=((pz.nx.wrap(cache.cache_end_index) >= pz.nx.arange("kv_seq", max_seq_len, dtype=jnp.int32))
                         & (base_mask | (pz.nx.arange("seq", max_seq_len, dtype=jnp.int32) >= initial_length)
                             ).untag("seq").tag("kv_seq"))[None].tag("seq"),
         sampling_state=cache
@@ -114,7 +117,6 @@ def get_texts(cache=cache, tokens=tokens):
 
     tokens = np.array(tokens.untag("batch", "seq").data_array)
     return [tokenizer.decode(sequence[1:]) for sequence in tokens]
-
 
 # In[33]:
 
@@ -141,7 +143,7 @@ ds_phi = datasets.Dataset.from_list(dataset)
 # In[ ]:
 
 
-ds_phi.push_to_hub("nev/generated-phi-format-text-2")
+ds_phi.push_to_hub("nev/generated-phi-format-text-3")
 
 
 # In[ ]:
