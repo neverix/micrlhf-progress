@@ -73,7 +73,7 @@ def add_vector(llama, vector, layer, scale=1.0, position="all", size_cond="all")
     if vector.ndim == 2:
         vector = pz.nx.wrap(vector * scale, "batch", "embedding")
     else:
-        pz.nx.wrap(vector * scale, "embedding")
+        vector = pz.nx.wrap(vector * scale, "embedding")
     act_add = llama.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).apply(
         lambda x: pz.nn.Sequential(
             [
