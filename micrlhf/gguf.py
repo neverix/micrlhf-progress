@@ -44,6 +44,9 @@ class GGUFReader(object):
         self.gguf_metadata, self.gguf_tensors = read_gguf_info(filename)
         self.mmap = np.memmap(filename)
 
+    def replace_metadata_prefix(self, prefix, new_prefix):
+        self.gguf_metadata = {k.replace(prefix, new_prefix): v for k, v in self.gguf_metadata.items()}
+
     @property
     def metadata(self):
         return self.gguf_metadata
@@ -55,7 +58,7 @@ class GGUFReader(object):
         return iter(self.gguf_tensors)
 
     def __getitem__(self, key):
-        assert key in self.gguf_tensors
+        assert key in self.gguf_tensors, f"Key {key} not found"
         tensor = self.gguf_tensors[key]
         start, end = tensor["offset"], tensor["offset"] + tensor["size"]
         data = self.mmap[start:end]
