@@ -17,7 +17,7 @@ appauthor = "nev"
 
 SAVE_EXT = ".npz"
 CACHE_DIR = user_cache_dir(appname, appauthor)
-REPO_NAME = "dmitriihook/micrlhf"
+REPO_NAME = "kisate-team/micrlhf"
 REPO_PATH_PREFIX = Path("vectors")
 
 
@@ -83,7 +83,6 @@ def load_vector_from_path(load_path: Path) -> Union[jnp.ndarray, pz.nx.NamedArra
             data = data.view(jnp.bfloat16)
         
         data = jnp.asarray(data)
-        print(type(shape.tolist()))
         return pz.nx.NamedArray(OrderedDict(shape.tolist()), data)
 
     return jnp.load(load_path)
