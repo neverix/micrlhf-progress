@@ -55,6 +55,7 @@ mkdir -p data/eval_source_data
 wget -c https://raw.githubusercontent.com/llm-attacks/llm-attacks/main/data/advbench/harmful_behaviors.csv -O data/adv.csv
 wget -c https://raw.githubusercontent.com/JailbreakBench/jailbreakbench/main/src/jailbreakbench/data/behaviors.csv -O data/jail.csv
 git clone https://github.com/anthropics/evals.git data/eval_source_data/anthropic_evals
+wget -c 'https://people.eecs.berkeley.edu/~hendrycks/data.tar' -O data/mmlu.tar
 ```
 
 ## Install pprof

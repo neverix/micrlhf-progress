@@ -2,7 +2,7 @@ import dataclasses
 import random
 from collections import OrderedDict
 from functools import partial
-from typing import Tuple, Union, List, Optional
+from typing import List, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -61,7 +61,8 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
            return_model: bool = False,
            strip_padding: bool = True,
            return_only_completion: bool = False,
-           seed: Optional[int] = None):
+           seed: Optional[int] = None,
+           verbose: bool = True,):
     if getattr(tokenizer, "pad_token_id", None) is not None:
         pad_token_id = tokenizer.pad_token_id
     if isinstance(prompt, str):
@@ -104,7 +105,7 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
     # generate
     advanced, tokens, key = sample_logits(logits, tokens, cache, key, do_sample=do_sample)
 
-    for _ in (bar := trange(max_seq_len)):
+    for _ in (trange(max_seq_len) if verbose else range(max_seq_len)):
         advanced, tokens, cache, key = sample_step(llama_cached, advanced, tokens, cache, key,
                                                    base_mask, offsets, do_sample=do_sample)
         # bar.set_description(tokenizer.decode(tokens.untag("batch", "seq").data_array[0]))
