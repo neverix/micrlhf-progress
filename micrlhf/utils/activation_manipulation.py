@@ -12,7 +12,7 @@ from micrlhf.llama import LlamaBlock
 class ActivationAblation(pz.Layer):
     addition: pz.nx.NamedArray
     position: Literal["all", "last", "first"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
-    size_cond: Literal["all", "lsat"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
+    size_cond: Literal["all", "last"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
     
     def adder(self, a, b):
         b = b / (jnp.linalg.norm(b) + 1e-10)
@@ -44,7 +44,7 @@ class ActivationReplacement(pz.Layer):
 class ActivationAddition(pz.Layer):
     addition: pz.nx.NamedArray
     position: Literal["all", "last", "first"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
-    size_cond: Literal["all", "lsat"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
+    size_cond: Literal["all", "last"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
     
     def adder(self, a, b):
         if self.position == "all":
