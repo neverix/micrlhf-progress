@@ -16,7 +16,9 @@ appname = "micrlhf"
 appauthor = "nev"
 
 SAVE_EXT = ".npz"
-CACHE_DIR = user_cache_dir(appname, appauthor)
+
+CACHE_DIR = Path(user_cache_dir(appname, appauthor)) / "data" / "vector_storage"
+
 REPO_NAME = "kisate-team/micrlhf"
 REPO_PATH_PREFIX = Path("vectors")
 
