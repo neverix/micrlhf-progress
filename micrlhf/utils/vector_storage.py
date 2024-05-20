@@ -17,7 +17,7 @@ appauthor = "nev"
 
 SAVE_EXT = ".npz"
 CACHE_DIR = user_cache_dir(appname, appauthor)
-REPO_NAME = "dmitriihook/micrlhf"
+REPO_NAME = "kisate-team/micrlhf"
 REPO_PATH_PREFIX = Path("vectors")
 
 
