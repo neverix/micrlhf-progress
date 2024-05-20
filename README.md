@@ -49,6 +49,14 @@ wget -c 'https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/m
 wget -c 'https://huggingface.co/mlabonne/gemma-2b-GGUF/resolve/main/gemma-2b.Q8_0.gguf?download=true' -O models/gemma-2b.gguf
 ```
 
+For evals:
+```
+mkdir -p data/eval_source_data
+wget -c https://raw.githubusercontent.com/llm-attacks/llm-attacks/main/data/advbench/harmful_behaviors.csv -O data/adv.csv
+wget -c https://raw.githubusercontent.com/JailbreakBench/jailbreakbench/main/src/jailbreakbench/data/behaviors.csv -O data/jail.csv
+git clone https://github.com/anthropics/evals.git data/eval_source_data/anthropic_evals
+```
+
 ## Install pprof
 
 Required for memory usage checking.
