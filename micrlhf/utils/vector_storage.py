@@ -33,6 +33,8 @@ def save_vector(name: str, vector: Union[jnp.ndarray, pz.nx.NamedArray], overwri
     if not save_path.parent.exists():
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if isinstance(vector, np.ndarray):
+        vector = jnp.asarray(vector)
     
     if isinstance(vector, jnp.ndarray):
         jnp.savez(save_path, data = vector)
@@ -43,6 +45,8 @@ def save_vector(name: str, vector: Union[jnp.ndarray, pz.nx.NamedArray], overwri
         shape = vector.named_shape
         vector = vector.unwrap(*shape.keys())
         jnp.savez(save_path, data = vector, shape = shape)
+    else:
+        raise TypeError(f'Unsupported type {type(vector)}')
 
 def upload_vector(name: str, overwrite: bool = False):
     save_path = Path(CACHE_DIR) / name
