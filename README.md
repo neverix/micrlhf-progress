@@ -41,7 +41,7 @@ Download models:
 
 ```
 # wget -c 'https://huggingface.co/QuantFactory/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf?download=true' -c -O models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf
-wget -c 'https://huggingface.co/QuantFactory/Meta-Llama-Guard-2-8B-GGUF/resolve/main/Meta-Llama-Guard-2-8B.Q8_0.gguf?download=true' -O models/llama-guard-q8_0.gguf
+wget -c 'https://huggingface.co/PrunaAI/Meta-Llama-Guard-2-8B-GGUF-smashed/resolve/main/Meta-Llama-Guard-2-8B.Q8_0.gguf?download=true' -O models/llama-guard-q8_0.gguf
 # wget -c 'https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-fp16.gguf?download=true' -O models/phi-3-16.gguf
 # wget -c 'https://huggingface.co/lmstudio-community/Phi-3-mini-4k-instruct-GGUF/resolve/main/Phi-3-mini-4k-instruct-fp16.gguf?download=true' -O models/phi-3-16.gguf
 wget -c 'https://huggingface.co/SanctumAI/Phi-3-mini-4k-instruct-GGUF/resolve/main/phi-3-mini-4k-instruct.fp16.gguf?download=true' -O models/phi-3-16.gguf

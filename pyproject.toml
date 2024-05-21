@@ -44,6 +44,7 @@ orbax = "^0.1.9"
 optax = "^0.2.2"
 more-itertools = "^10.2.0"
 rich = "^13.7.1"
+replicate = "^0.26.0"
 
 [build-system]
 requires = ["poetry-core"]
