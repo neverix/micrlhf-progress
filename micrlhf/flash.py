@@ -69,10 +69,10 @@ class LlamaFlashAttention(pz.nn.Attention):
                  None,
                  axis_name_to_mesh_name.get(self.seq_axis)
                  ),),
-            out_specs=(P(axis_name_to_mesh_name.get("batch"),
+            out_specs=P(axis_name_to_mesh_name.get("batch"),
                axis_name_to_mesh_name.get(self.head_axis),
                axis_name_to_mesh_name.get(self.seq_axis),
-               None)),
+               None),
             check_rep=False)(q, k, v, ab),
         )(q, k, v, ab)
 

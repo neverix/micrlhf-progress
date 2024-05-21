@@ -348,7 +348,8 @@ class LlamaTransformer(pz.Layer):
     def from_pretrained(cls, gguf_path: os.PathLike,
                         from_type: Literal[None, "gemma"] = None,
                         device_map="auto", extract_layer=None,
-                        load_eager=False):
+                        load_eager=False,
+                        transpose_rotary: Optional[bool] = None):
         mesh = cls.make_mesh(device_map)
         
         gguf = GGUFReader(gguf_path)
@@ -395,19 +396,21 @@ class LlamaTransformer(pz.Layer):
         }
         is_transposed = {k: False for k in param_mapping}
 
+        if transpose_rotary is None:
+            transpose_rotary = from_type != "gemma"
         if not load_eager:
             # assume no linears are transposed
             transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
                 lambda linear: make_linear(linear, *gguf[param_mapping[
                     linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
                     ]], mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name,
-                                           transpose_rotary=from_type != "gemma")
+                                           transpose_rotary=transpose_rotary)
             )
         transformer = transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
             lambda param: make_param(param, *gguf[param_mapping[param.name]],
                                      mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name,
                                      is_transposed=is_transposed[param.name],
-                                     transpose_rotary=from_type != "gemma")
+                                     transpose_rotary=transpose_rotary)
         )
 
         return transformer

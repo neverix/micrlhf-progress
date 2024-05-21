@@ -7,6 +7,7 @@ from more_itertools import chunked
 from tqdm.auto import tqdm
 
 from micrlhf.sampling import jit_wrapper, jnp
+from micrlhf.scan import sequential_to_scan
 
 combined_prompt = """<|user|>
 {}
@@ -36,7 +37,7 @@ class MMLUEval(object):
     def evaluate(self, llama, tokenizer, batch_size=128):
         ps = tokenizer.padding_side
         tokenizer.padding_side = "right"
-        llama_call = jit_wrapper.Jitted(llama)
+        llama_call = jit_wrapper.Jitted(sequential_to_scan(llama))
         accuracies = []
         for batch in chunked(tqdm(self.dataset), batch_size):
             og_batch_size = len(batch)
@@ -56,6 +57,6 @@ class MMLUEval(object):
             mask = pz.nx.wrap(jnp.asarray(tokens["attention_mask"]), "batch", "seq")
             probs = pz.nx.nmap(lambda p, m, i: p[m.sum() - 2, i[m.sum() - 1]])(
                 probs.untag("seq", "vocabulary"), mask.untag("seq"), token_array.untag("seq"))
-            accuracies.append(float(probs.data_array[:og_batch_size].mean()))
+            accuracies.extend(probs.unwrap("batch").tolist())
         tokenizer.padding_side = ps
         return sum(accuracies) / len(accuracies)
