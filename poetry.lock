@@ -662,6 +662,20 @@ graph = ["objgraph (>=1.7.2)"]
 profile = ["gprof2dot (>=2022.7.29)"]
 
 [[package]]
+name = "distribute"
+version = "0.7.3"
+description = "distribute legacy wrapper"
+optional = false
+python-versions = "*"
+files = [
+    {file = "distribute-0.7.3.zip", hash = "sha256:3dc7a8d059dcf72f0ead2fa2144a24ee0ef07dce816e8c3545d7345767138c5e"},
+]
+
+[package.extras]
+certs = ["certifi (==0.0.8)"]
+ssl = ["ctypes (==1.0.2)", "ssl (==1.16)", "wincertstore (==0.1)"]
+
+[[package]]
 name = "equinox"
 version = "0.11.4"
 description = "Elegant easy-to-use neural networks in JAX."
@@ -2798,6 +2812,20 @@ files = [
 six = ">=1.5"
 
 [[package]]
+name = "python-dotenv"
+version = "1.0.1"
+description = "Read key-value pairs from a .env file and set them as environment variables"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "python-dotenv-1.0.1.tar.gz", hash = "sha256:e324ee90a023d808f1959c46bcbc04446a10ced277783dc6ee09987c37ec10ca"},
+    {file = "python_dotenv-1.0.1-py3-none-any.whl", hash = "sha256:f7b63ef50f1b690dddf550d03497b66d609393b40b564ed0d674909a68ebf16a"},
+]
+
+[package.extras]
+cli = ["click (>=5.0)"]
+
+[[package]]
 name = "pytz"
 version = "2024.1"
 description = "World timezone definitions, modern and historical"
@@ -4295,4 +4323,4 @@ testing = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "e0d376820612b36be03543876bce1d58955e283bc09ed77b65d192b27fff1315"
+content-hash = "7d640692a1d5e9067adfd9aa2179705d7e10b04f1be57f52a67ecf89f458bd2b"

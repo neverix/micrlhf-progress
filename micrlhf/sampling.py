@@ -105,7 +105,7 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
     # generate
     advanced, tokens, key = sample_logits(logits, tokens, cache, key, do_sample=do_sample)
 
-    for _ in (trange(max_seq_len) if verbose else range(max_seq_len)):
+    for _ in (trange(max_seq_len - initial_length) if verbose else range(max_seq_len - initial_length)):
         advanced, tokens, cache, key = sample_step(llama_cached, advanced, tokens, cache, key,
                                                    base_mask, offsets, do_sample=do_sample)
         # bar.set_description(tokenizer.decode(tokens.untag("batch", "seq").data_array[0]))

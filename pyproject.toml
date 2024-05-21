@@ -45,6 +45,8 @@ optax = "^0.2.2"
 more-itertools = "^10.2.0"
 rich = "^13.7.1"
 replicate = "^0.26.0"
+distribute = "^0.7.3"
+python-dotenv = "^1.0.1"
 
 [build-system]
 requires = ["poetry-core"]
