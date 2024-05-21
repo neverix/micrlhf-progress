@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
 from jax.experimental import pallas as pl
+from jax.sharding import PartitionSpec as P
 from jax.experimental.pallas import tpu as pltpu
 from penzai import pz
 from penzai.toolshed import sharding_util
@@ -37,13 +38,25 @@ def make_linear(old_linear: pz.nn.Linear,
         axes = (*old_linear.input_axes.keys(), "quant_group", *old_linear.output_axes.keys())
         d = d.untag(*axes).tag(*axes)
         new_data.append(d)
+    def find_axis(keys):
+        axes = [axis_name_to_mesh_name.get(k) for k in keys]
+        if all(x is None for x in axes):
+            return None
+        return next(x for x in axes if x is not None)
+    in_axis = find_axis(old_linear.input_axes.keys())
+    out_axis = find_axis(old_linear.output_axes.keys())
     if quant_type == "q8_0":
+        raise NotImplementedError(
+            "Use load_eager=True. 8-bit quantization is broken with multiple axes and input axis model parallel.")
         return Linear8bitTranspose(
             in_features=old_linear.input_axes,
             out_features=old_linear.output_axes,
             scale=new_data[0],
             quants=new_data[1],
-            dtype=param.value_structure.dtype
+            dtype=param.value_structure.dtype,
+            mesh=mesh,
+            in_axis=in_axis,
+            out_axis=out_axis
         )
     else:
         raise NotImplementedError(f"Quantization type {quant_type} not implemented")
@@ -97,7 +110,7 @@ def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 
-def matmul_8bit_fast(quants, scale, inputs):
+def matmul_8bit_fast(quants, scale, inputs, mesh, batch_axis="dp", in_axis=None, out_axis=None):
     inputs = inputs.astype(jnp.bfloat16)
     scale = scale.astype(jnp.bfloat16)
 
@@ -107,23 +120,33 @@ def matmul_8bit_fast(quants, scale, inputs):
     og_shape = inputs.shape
     inputs = jnp.pad(inputs, ((0, max(0, block_x - inputs.shape[0])), (0, 0)))
 
-    result = pl.pallas_call(
-        partial(matmul_8bit_kernel, block_k=block_k, quant_group_size=quants.shape[1]),
-        grid_spec=pltpu.PrefetchScalarGridSpec(
-            num_scalar_prefetch=0,
-            grid=(int(inputs.shape[0] / block_x), int(quants.shape[2] / block_y)),
-            in_specs=[
-                pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], quants.shape[1], block_y)),
-                pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], 1, block_y)),
-                pl.BlockSpec(lambda i, j: (i, 0), (block_x, inputs.shape[1])),
-            ],
-            out_specs=pl.BlockSpec(
-                lambda i, j: (i, j), (block_x, block_y)
+    result = jax.experimental.shard_map.shard_map(
+        lambda quants, scale, inputs: pl.pallas_call(
+            partial(matmul_8bit_kernel, block_k=block_k, quant_group_size=quants.shape[1]),
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=0,
+                grid=(int(inputs.shape[0] / block_x), int(quants.shape[2] / block_y)),
+                in_specs=[
+                    pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], quants.shape[1], block_y)),
+                    pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], 1, block_y)),
+                    pl.BlockSpec(lambda i, j: (i, 0), (block_x, inputs.shape[1])),
+                ],
+                out_specs=pl.BlockSpec(
+                    lambda i, j: (i, j), (block_x, block_y)
+                ),
+                scratch_shapes=[pltpu.VMEM((block_x, block_y), jnp.float32)],
             ),
-            scratch_shapes=[pltpu.VMEM((block_x, block_y), jnp.float32)],
+            out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
+            compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "parallel"))),
+        )(quants, scale, inputs),
+        mesh=mesh,
+        in_specs=(
+            P(in_axis, None, out_axis),
+            P(in_axis, None, out_axis),
+            P(batch_axis, in_axis),
         ),
-        out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
-        compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "parallel"))),
+        out_specs=P(batch_axis, out_axis),
+        check_rep=False
     )(quants, scale, inputs)
     return result[:og_shape[0]]
 
@@ -133,6 +156,9 @@ class Linear8bitTranspose(QuantizedLinear):
     scale: pz.nx.NamedArray
     quants: pz.nx.NamedArray
     dtype: jax.typing.DTypeLike = dataclasses.field(metadata={"pytree_node": False})
+    mesh: jshard.Mesh = dataclasses.field(metadata={"pytree_node": False})
+    in_axis: str = dataclasses.field(metadata={"pytree_node": False})
+    out_axis: str = dataclasses.field(metadata={"pytree_node": False})
 
     def quant_linear(self, inputs: jnp.ndarray) -> jnp.ndarray:
         scale, quants = self.scale, self.quants
@@ -143,7 +169,8 @@ class Linear8bitTranspose(QuantizedLinear):
             .unwrap("in_features", "quant_group", "out_features")
             for tensor in (scale, quants)
         )
-        return matmul_8bit_fast(quants, scale, inputs)
+        mesh = self.mesh
+        return matmul_8bit_fast(quants, scale, inputs, mesh)
         # warnings.warn("Using slow 8-bit matmul, inputs too small")
         # weight = scale.astype(self.dtype) * quants
         # weight = weight.reshape(np.prod(list(self.in_features.values())), -1)

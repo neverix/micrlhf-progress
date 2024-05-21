@@ -1,16 +1,12 @@
+from collections import OrderedDict
+from pathlib import Path
+from typing import Union
+
 import jax.numpy as jnp
 import numpy as np
-
-from collections import OrderedDict
-from huggingface_hub import HfApi
-from huggingface_hub import HfFileSystem
-from penzai import pz
-
-from typing import Union
-from pathlib import Path
-
 from appdirs import *
-
+from huggingface_hub import HfApi, HfFileSystem
+from penzai import pz
 
 appname = "micrlhf"
 appauthor = "nev"
@@ -91,7 +87,7 @@ def load_vector_from_path(load_path: Path) -> Union[jnp.ndarray, pz.nx.NamedArra
         data = jnp.asarray(data)
         return pz.nx.NamedArray(OrderedDict(shape.tolist()), data)
 
-    return jnp.load(load_path)
+    return jnp.asarray(jnp.load(load_path)["data"])
 
 def download_vector(name: str, overwrite: bool = False) -> Union[jnp.ndarray, pz.nx.NamedArray]:
     repo_path = Path(REPO_NAME) / REPO_PATH_PREFIX / name

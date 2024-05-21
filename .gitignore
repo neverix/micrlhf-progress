@@ -6,6 +6,7 @@ memory.prof
 *.tar.gz
 scratch.ipynb
 nohup.out
+.env
 
 # Python gitignore
 

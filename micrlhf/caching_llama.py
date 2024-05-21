@@ -200,6 +200,6 @@ class LlamaKVCachingTransformer(pz.Layer):
     )
     return inference_model, sampling_state
 
-@property
-def inputs(self):
-    return LlamaKVCachingInputs
+  @property
+  def inputs(self):
+      return LlamaKVCachingInputs
