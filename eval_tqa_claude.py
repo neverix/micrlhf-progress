@@ -8,11 +8,15 @@ from glob import glob
 from matplotlib import pyplot as plt
 import numpy as np
 import requests
+import anthropic
 
 load_dotenv()
 
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 URL = "https://api.anthropic.com/v1/complete"
+client = anthropic.Anthropic(
+    api_key=CLAUDE_API_KEY,
+)
 
 QUESTION_KEY = "question"
 CORRECT_ANSWER_KEY = "answer"
@@ -28,30 +32,17 @@ def get_layer(filename):
     return int(f.split("_")[4])
 
 def make_claude_request(human_input: str, max_tokens: int = 256) -> str:
-    headers = {
-        'accept': 'application/json',
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'x-api-key': CLAUDE_API_KEY,
-    }
-
-    data = {
-        "model": "claude-2",
-        "prompt": f"\n\nHuman: {human_input.strip()}\n\nAssistant:",
-        "max_tokens_to_sample": max_tokens,
-        "temperature": 0.0
-    }
-    response = None
-    for _ in range(20):
-        try:
-            response = requests.post(URL, headers=headers, json=data)
-            response_json = response.json()
-            return response_json["completion"].strip()
-        except Exception as e:
-            print(response_json)
-            print("Request failed, retrying...")
-            sleep(5)
-            continue
+    message = client.messages.create(
+        max_tokens=1024,
+        messages=[
+            {
+                "role": "user",
+                "content": human_input.strip(),
+            }
+        ],
+        model="claude-3-haiku-20240307",
+    )
+    return message.content[0].text.strip()
 
 def make_prompt(question, answer, reference):
     return """
@@ -96,28 +87,37 @@ def get_scores(dataset_file):
     }
     idx = 0
     skipped = 0
-    for item in tqdm(dataset):
-        idx += 1
-        if idx % 10 == 0:
-            sleep(5) # to avoid API rate limit
-        question = item[QUESTION_KEY]
-        reference = item[CORRECT_ANSWER_KEY]
-        score_plus = make_claude_request(make_prompt(question=question, reference=reference, answer=item[ANSWER_PLUS_KEY]))
-        score_minus = make_claude_request(make_prompt(question=question, reference=reference, answer=item[ANSWER_MINUS_KEY]))
-        try:
-            score_json = {
-                "answer_plus_score": int(score_plus),
-                "answer_minus_score": int(score_minus),
-            }
-            score_json.update(item)
-            scores.append(score_json)
-            averages["answer_plus_score"] += int(score_plus)
-            averages["answer_minus_score"] += int(score_minus)
-        except ValueError:
-            print("Error: score is not a number", score_plus, score_minus)
-            skipped += 1
-    averages["answer_plus_score"] /= (len(dataset) - skipped)
-    averages["answer_minus_score"] /= (len(dataset) - skipped)
+    try:
+        for item in (bar := tqdm(dataset)):
+            idx += 1
+            if idx % 10 == 0:
+                sleep(5) # to avoid API rate limit
+            question = item[QUESTION_KEY]
+            reference = item[CORRECT_ANSWER_KEY]
+            score_plus = make_claude_request(make_prompt(question=question, reference=reference, answer=item[ANSWER_PLUS_KEY]))
+            score_minus = make_claude_request(make_prompt(question=question, reference=reference, answer=item[ANSWER_MINUS_KEY]))
+            try:
+                score_json = {
+                    "answer_plus_score": int(score_plus),
+                    "answer_minus_score": int(score_minus),
+                }
+                score_json.update(item)
+                scores.append(score_json)
+                averages["answer_plus_score"] += int(score_plus)
+                averages["answer_minus_score"] += int(score_minus)
+            except ValueError:
+                print("Error: score is not a number", score_plus, score_minus)
+                skipped += 1
+            size = max(1, idx - skipped)
+            bar.set_postfix(plus=averages["answer_plus_score"] / size,
+                            minus=averages["answer_minus_score"] / size)
+    except KeyboardInterrupt:
+        pass
+    averages["answer_plus_score"] /= (idx - skipped)
+    averages["answer_minus_score"] /= (idx - skipped)
     return averages
 
-print(get_scores("data/phi_tqa_l20_100.00.json"))
+# print(get_scores("data/phi_tqa_l20_100.00.json"))
+# print(get_scores("data/phi_tqa_l20_0.00.json"))
+# print(get_scores("data/phi_tqa_l20_44.44.json"))
+# print(get_scores("data/phi_tqa_l20_22.22.json"))
