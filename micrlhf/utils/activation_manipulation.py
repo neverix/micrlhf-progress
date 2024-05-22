@@ -13,9 +13,11 @@ class ActivationAblation(pz.Layer):
     addition: pz.nx.NamedArray
     position: Literal["all", "last", "first"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
     size_cond: Literal["all", "last"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
-    
+    normalize: bool = dataclasses.field(metadata={"pytree_node": False}, default=True)
+
     def adder(self, a, b):
-        b = b / (jnp.linalg.norm(b) + 1e-10)
+        if self.normalize:
+            b = b / (jnp.linalg.norm(b) + 1e-10)
         updated = a - b * (a * b).sum(-1, keepdims=True)
         if self.position == "all":
             return updated
@@ -60,11 +62,16 @@ class ActivationAddition(pz.Layer):
             x.untag("seq"), self.addition).tag("seq")
 
 
-def ablate_direction(llama, direction):
-    act_abl = llama.select().at_instances_of(LlamaBlock).apply_with_selected_index(
-        lambda layer, x: pz.nn.Sequential(
+def ablate_direction(llama, direction, normalize=True, batch_axis="batch"):
+    if direction.ndim == 2:
+        direction = pz.nx.wrap(direction, batch_axis, "embedding")
+    else:
+        direction = pz.nx.wrap(direction, "embedding")
+    act_abl = llama.select().at_instances_of(LlamaBlock).apply(
+        lambda x: pz.nn.Sequential(
             [
-                ActivationAblation(pz.nx.wrap(direction, "embedding"), position="all", size_cond="all"),
+                ActivationAblation(direction,
+                                   position="all", size_cond="all", normalize=normalize),
                 x
             ]))
     return act_abl
