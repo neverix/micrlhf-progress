@@ -177,6 +177,10 @@ def logprob_loss(logits, tokens, sep=1599, n_first=None, shift=None):
 
     logits = logits[:, :-1]
 
+    # print(
+    #     logits.argmax(axis=-1)
+    # )
+
     logits = jnp.take_along_axis(logits, tokens[:, 1:, None], axis=-1).squeeze(-1)
 
     mask = tokens[:, 1:] == sep
@@ -186,10 +190,15 @@ def logprob_loss(logits, tokens, sep=1599, n_first=None, shift=None):
     if shift is not None:
         rolled_mask = jnp.roll(mask, shift, axis=-1)
         mask = jnp.logical_and(mask, rolled_mask)
+
+    # print(mask[:, -5:])
     
     if n_first is not None:
         rolled_mask = jnp.roll(mask, n_first, axis=-1)
         mask = jnp.logical_and(mask, jnp.logical_not(rolled_mask))
+
+    # print(mask[:, -5:])
+
     
     logits = logits * mask
 
@@ -243,5 +252,10 @@ class ICLRunner:
 
     def get_tokens(self, pairs, tokenizer):
         prompts = [self.get_prompt(p) for p in pairs]
-        return tokenizer(prompts, padding=True, truncation=True, return_tensors="np", max_length=self.max_seq_len)
+        
+        tokenized = tokenizer(prompts, padding="longest", return_tensors="np")
+
+        assert tokenized["input_ids"].shape[1] <= self.max_seq_len, "Prompt too long for model."
+
+        return tokenized
     
