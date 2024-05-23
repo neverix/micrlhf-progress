@@ -66,9 +66,10 @@ class ICLSequence:
 
     Uses the default template "Q: {x}\nA: {y}" (with separate pairs split by "\n\n").
     '''
-    def __init__(self, word_pairs: List[List[str]]):
+    def __init__(self, word_pairs: List[List[str]], prepend_space=False):
         self.word_pairs = word_pairs
         self.x, self.y = zip(*word_pairs)
+        self.prepend_space = prepend_space
 
     def __len__(self):
         return len(self.word_pairs)
@@ -84,7 +85,10 @@ class ICLSequence:
     def prompt(self):
         '''Returns the prompt, which contains all but the second element in the last word pair.'''
         p = ", ".join([f"{x} -> {y}" for x, y in self.word_pairs])
-        return p[:-len(self.completion())-1]
+
+        if self.prepend_space:
+            return " " + p[:-len(self.completion())]
+        return p[:-len(self.completion()) -1]
 
     def completion(self):
         '''Returns the second element in the last word pair (with padded space).'''
@@ -122,6 +126,7 @@ class ICLDataset:
         bidirectional: bool = True,
         seed: int = 0,
         corrupted: bool = False,
+        prepend_space: bool = False
     ):
         assert n_prepended+1 <= len(word_pairs), "Not enough antonym pairs in dataset to create prompt."
 
@@ -132,6 +137,7 @@ class ICLDataset:
         self.bidirectional = bidirectional
         self.corrupted = corrupted
         self.seed = seed
+        self.prepend_space = prepend_space
 
         self.seqs = []
         self.prompts = []
@@ -147,7 +153,7 @@ class ICLDataset:
             if corrupted:
                 for i in range(len(word_pairs) - 1):
                     word_pairs[i][1] = np.random.choice(self.word_list)
-            seq = ICLSequence(word_pairs)
+            seq = ICLSequence(word_pairs, prepend_space=self.prepend_space)
 
             self.seqs.append(seq)
             self.prompts.append(seq.prompt())
@@ -162,3 +168,16 @@ class ICLDataset:
 
     def __getitem__(self, idx: int):
         return self.seqs[idx]
+
+class ICLRunner:
+    def __init__(self, task: str, tasks: dict, seed=0, batch_size=20, n_shot=5):
+        self.task = task
+        self.tasks = tasks
+        self.seed = seed
+        self.batch_size = batch_size
+        self.n_shot = n_shot
+        
+        self.prepend_space = task.startswith("algo")
+
+
+        self.train_dataset = ICLDataset(self.tasks[task], 100, 2, seed=0, prepend_space=self.prepend_space)
