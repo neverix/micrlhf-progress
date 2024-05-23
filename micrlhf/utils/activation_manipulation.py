@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Literal
+from typing import Literal, Union
 
 import jax
 import jax.numpy as jnp
@@ -45,10 +45,14 @@ class ActivationReplacement(pz.Layer):
 @pz.pytree_dataclass
 class ActivationAddition(pz.Layer):
     addition: pz.nx.NamedArray
-    position: Literal["all", "last", "first"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
+    position: Union[Literal["all", "last", "first"], jnp.ndarray] = dataclasses.field(metadata={"pytree_node": False}, default="all")
     size_cond: Literal["all", "last"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
     
     def adder(self, a, b):
+
+        if isinstance(self.position, jnp.ndarray):
+            return a.at[self.position].add(b)
+
         if self.position == "all":
             return a + b
         elif self.position == "last":
@@ -57,6 +61,14 @@ class ActivationAddition(pz.Layer):
             return a.at[0].add(b)
     
     def __call__(self, x):
+        if isinstance(self.position, jnp.ndarray):
+
+            def f(a, b):
+                return a.at[b].add(self.addition.unwrap("embedding"))
+
+            return pz.nx.wrap(jax.vmap(f)(x.unwrap("batch", "seq", "embedding"), self.position), "batch", "seq", "embedding")
+
+            
         return pz.nx.nmap(lambda a, b: jax.lax.select(
             self.size_cond == "all" or len(a) > 1, self.adder(a, b).astype(a), a))(
             x.untag("seq"), self.addition).tag("seq")

@@ -4,7 +4,10 @@ import subprocess
 import glob
 import json
 from typing import List
+import jax
+import jax.numpy as jnp
 import numpy as np
+from micrlhf.utils.activation_manipulation import add_vector
 
 
 def generate_algorithmic_tasks(seed = 0, n_examples=300, max_len=10, max_value=100):
@@ -169,15 +172,76 @@ class ICLDataset:
     def __getitem__(self, idx: int):
         return self.seqs[idx]
 
+def logprob_loss(logits, tokens, sep=1599, n_first=None, shift=None):
+    logits = jax.nn.log_softmax(logits)
+
+    logits = logits[:, :-1]
+
+    logits = jnp.take_along_axis(logits, tokens[:, 1:, None], axis=-1).squeeze(-1)
+
+    mask = tokens[:, 1:] == sep
+    mask = jnp.cumsum(mask[:, ::-1], axis=-1)[:, ::-1] > 0
+    mask = jnp.logical_not(mask)
+
+    if shift is not None:
+        rolled_mask = jnp.roll(mask, shift, axis=-1)
+        mask = jnp.logical_and(mask, rolled_mask)
+    
+    if n_first is not None:
+        rolled_mask = jnp.roll(mask, n_first, axis=-1)
+        mask = jnp.logical_and(mask, jnp.logical_not(rolled_mask))
+    
+    logits = logits * mask
+
+    return -logits.sum(axis=-1).mean(axis=-1)
+
+def make_act_adder(llama, tv, tokens, layer, length=1, sep=1599, shift=0):
+    mask = tokens == sep
+
+    positions = jnp.argwhere(mask)[:, -1]
+    positions = jnp.column_stack(
+        tuple(
+            positions + i + shift
+            for i in range(length)
+        )
+    )
+
+    add_act = add_vector(llama, tv, layer, 1, position = positions)
+
+    return add_act
+
+def get_tv(resids, tokens, sep=1599, shift=None):
+    mask = tokens == sep
+    
+    if shift is not None:
+        mask = jnp.roll(mask, shift, axis=-1)
+
+    tv = resids[mask]
+
+    return tv.mean(axis=0)
+
 class ICLRunner:
-    def __init__(self, task: str, tasks: dict, seed=0, batch_size=20, n_shot=5):
+    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128):
         self.task = task
-        self.tasks = tasks
+        self.pairs = pairs
         self.seed = seed
         self.batch_size = batch_size
         self.n_shot = n_shot
+        self.max_seq_len = max_seq_len
         
         self.prepend_space = task.startswith("algo")
 
+        self.gen = random.Random(seed)
 
-        self.train_dataset = ICLDataset(self.tasks[task], 100, 2, seed=0, prepend_space=self.prepend_space)
+        self.train_pairs = [self.gen.sample(pairs, k=n_shot) for _ in range(batch_size)]
+        self.eval_pairs = [self.gen.sample(pairs, k=1) for _ in range(batch_size)]
+
+        self.prompt = "<|user|>\nFollow the pattern:\n{}"
+
+    def get_prompt(self, pairs):
+        return self.prompt.format("\n".join([f"{x} -> {y}" for x, y in pairs]))
+
+    def get_tokens(self, pairs, tokenizer):
+        prompts = [self.get_prompt(p) for p in pairs]
+        return tokenizer(prompts, padding=True, truncation=True, return_tensors="np", max_length=self.max_seq_len)
+    
