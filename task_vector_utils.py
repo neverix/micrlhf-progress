@@ -4,7 +4,10 @@ import subprocess
 import glob
 import json
 from typing import List
+import jax
+import jax.numpy as jnp
 import numpy as np
+from micrlhf.utils.activation_manipulation import add_vector
 
 
 def generate_algorithmic_tasks(seed = 0, n_examples=300, max_len=10, max_value=100):
@@ -66,9 +69,10 @@ class ICLSequence:
 
     Uses the default template "Q: {x}\nA: {y}" (with separate pairs split by "\n\n").
     '''
-    def __init__(self, word_pairs: List[List[str]]):
+    def __init__(self, word_pairs: List[List[str]], prepend_space=False):
         self.word_pairs = word_pairs
         self.x, self.y = zip(*word_pairs)
+        self.prepend_space = prepend_space
 
     def __len__(self):
         return len(self.word_pairs)
@@ -84,7 +88,10 @@ class ICLSequence:
     def prompt(self):
         '''Returns the prompt, which contains all but the second element in the last word pair.'''
         p = ", ".join([f"{x} -> {y}" for x, y in self.word_pairs])
-        return p[:-len(self.completion())-1]
+
+        if self.prepend_space:
+            return " " + p[:-len(self.completion())]
+        return p[:-len(self.completion()) -1]
 
     def completion(self):
         '''Returns the second element in the last word pair (with padded space).'''
@@ -122,6 +129,7 @@ class ICLDataset:
         bidirectional: bool = True,
         seed: int = 0,
         corrupted: bool = False,
+        prepend_space: bool = False
     ):
         assert n_prepended+1 <= len(word_pairs), "Not enough antonym pairs in dataset to create prompt."
 
@@ -132,6 +140,7 @@ class ICLDataset:
         self.bidirectional = bidirectional
         self.corrupted = corrupted
         self.seed = seed
+        self.prepend_space = prepend_space
 
         self.seqs = []
         self.prompts = []
@@ -147,7 +156,7 @@ class ICLDataset:
             if corrupted:
                 for i in range(len(word_pairs) - 1):
                     word_pairs[i][1] = np.random.choice(self.word_list)
-            seq = ICLSequence(word_pairs)
+            seq = ICLSequence(word_pairs, prepend_space=self.prepend_space)
 
             self.seqs.append(seq)
             self.prompts.append(seq.prompt())
@@ -162,3 +171,91 @@ class ICLDataset:
 
     def __getitem__(self, idx: int):
         return self.seqs[idx]
+
+def logprob_loss(logits, tokens, sep=1599, n_first=None, shift=None):
+    logits = jax.nn.log_softmax(logits)
+
+    logits = logits[:, :-1]
+
+    # print(
+    #     logits.argmax(axis=-1)
+    # )
+
+    logits = jnp.take_along_axis(logits, tokens[:, 1:, None], axis=-1).squeeze(-1)
+
+    mask = tokens[:, 1:] == sep
+    mask = jnp.cumsum(mask[:, ::-1], axis=-1)[:, ::-1] > 0
+    mask = jnp.logical_not(mask)
+
+    if shift is not None:
+        rolled_mask = jnp.roll(mask, shift, axis=-1)
+        mask = jnp.logical_and(mask, rolled_mask)
+
+    # print(mask[:, -5:])
+    
+    if n_first is not None:
+        rolled_mask = jnp.roll(mask, n_first, axis=-1)
+        mask = jnp.logical_and(mask, jnp.logical_not(rolled_mask))
+
+    # print(mask[:, -5:])
+
+    
+    logits = logits * mask
+
+    return -logits.sum(axis=-1).mean(axis=-1)
+
+def make_act_adder(llama, tv, tokens, layer, length=1, sep=1599, shift=0):
+    mask = tokens == sep
+
+    positions = jnp.argwhere(mask)[:, -1]
+    positions = jnp.column_stack(
+        tuple(
+            positions + i + shift
+            for i in range(length)
+        )
+    )
+
+    add_act = add_vector(llama, tv, layer, 1, position = positions)
+
+    return add_act
+
+def get_tv(resids, tokens, sep=1599, shift=None):
+    mask = tokens == sep
+    
+    if shift is not None:
+        mask = jnp.roll(mask, shift, axis=-1)
+
+    tv = resids[mask]
+
+    return tv.mean(axis=0)
+
+class ICLRunner:
+    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128):
+        self.task = task
+        self.pairs = pairs
+        self.seed = seed
+        self.batch_size = batch_size
+        self.n_shot = n_shot
+        self.max_seq_len = max_seq_len
+        
+        self.prepend_space = task.startswith("algo")
+
+        self.gen = random.Random(seed)
+
+        self.train_pairs = [self.gen.sample(pairs, k=n_shot) for _ in range(batch_size)]
+        self.eval_pairs = [self.gen.sample(pairs, k=1) for _ in range(batch_size)]
+
+        self.prompt = "<|user|>\nFollow the pattern:\n{}"
+
+    def get_prompt(self, pairs):
+        return self.prompt.format("\n".join([f"{x} -> {y}" for x, y in pairs]))
+
+    def get_tokens(self, pairs, tokenizer):
+        prompts = [self.get_prompt(p) for p in pairs]
+        
+        tokenized = tokenizer(prompts, padding="longest", return_tensors="np")
+
+        assert tokenized["input_ids"].shape[1] <= self.max_seq_len, "Prompt too long for model."
+
+        return tokenized
+    
