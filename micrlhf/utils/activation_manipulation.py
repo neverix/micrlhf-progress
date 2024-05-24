@@ -45,12 +45,15 @@ class ActivationReplacement(pz.Layer):
 @pz.pytree_dataclass
 class ActivationAddition(pz.Layer):
     addition: pz.nx.NamedArray
-    position: Union[Literal["all", "last", "first"], jnp.ndarray] = dataclasses.field(metadata={"pytree_node": False}, default="all")
+    position: Union[Literal["all", "last", "first"], int, jnp.ndarray] = dataclasses.field(metadata={"pytree_node": False}, default="all")
     size_cond: Literal["all", "last"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
     
     def adder(self, a, b):
 
         if isinstance(self.position, jnp.ndarray):
+            return a.at[self.position].add(b)
+
+        if isinstance(self.position, int):
             return a.at[self.position].add(b)
 
         if self.position == "all":
@@ -62,11 +65,11 @@ class ActivationAddition(pz.Layer):
     
     def __call__(self, x):
         if isinstance(self.position, jnp.ndarray):
+            if self.position.ndim == 2:
+                def f(a, b):
+                    return a.at[b].add(self.addition.unwrap("embedding"))
 
-            def f(a, b):
-                return a.at[b].add(self.addition.unwrap("embedding"))
-
-            return pz.nx.wrap(jax.vmap(f)(x.unwrap("batch", "seq", "embedding"), self.position), "batch", "seq", "embedding")
+                return pz.nx.wrap(jax.vmap(f)(x.unwrap("batch", "seq", "embedding"), self.position), "batch", "seq", "embedding")
 
             
         return pz.nx.nmap(lambda a, b: jax.lax.select(
@@ -88,6 +91,14 @@ class ActivationSet(pz.Layer):
         y = pz.nx.nmap(lambda a, b, v: self.setter(a, b, v).astype(a))(
             x.untag("embedding"), self.direction.untag("embedding"), self.value)
         return y.tag("embedding")
+
+def wrap_vector(vector):
+    if vector.ndim == 2:
+        vector = pz.nx.wrap(vector, "batch", "embedding")
+    else:
+        vector = pz.nx.wrap(vector, "embedding")
+
+    return vector
 
 def set_direction(llama, direction, value, layer, batch_axis="batch"):
     if direction.ndim == 2:
@@ -124,10 +135,9 @@ def ablate_direction(llama, direction, normalize=True, batch_axis="batch"):
     return act_abl
 
 def add_vector(llama, vector, layer, scale=1.0, position="all", size_cond="all"):
-    if vector.ndim == 2:
-        vector = pz.nx.wrap(vector * scale, "batch", "embedding")
-    else:
-        vector = pz.nx.wrap(vector * scale, "embedding")
+    
+    vector = wrap_vector(vector * scale)
+
     act_add = llama.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).apply(
         lambda x: pz.nn.Sequential(
             [
@@ -136,14 +146,42 @@ def add_vector(llama, vector, layer, scale=1.0, position="all", size_cond="all")
             ]))
     return act_add
 
+def add_vector_many(llama, vectors, prompt, target_tokens, layers, tokenizer, scale=1.0, size_cond="all"):
+    
+    positions = [[i for i, a in enumerate(tokenizer.encode(prompt)) if tokenizer.decode([a]) == replace_token] for replace_token in target_tokens]
+
+    vectors = [
+        wrap_vector(vector * scale).astype('bfloat16') for vector in vectors
+    ]
+
+    act_add = llama
+
+    for vector, position, layer in zip(vectors, positions, layers):
+        act_add = act_add.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).apply(
+            lambda x: pz.nn.Sequential([ActivationAddition(
+                vector, position=p, size_cond=size_cond) for p in position] + [x]))
+    return act_add
+
 def replace_activation(llama, vector, positions=None, prompt=None, tokenizer=None, replace_token="X", layer=0):
     if positions is None:
         positions = [i for i, a in enumerate(tokenizer.encode(prompt)) if tokenizer.decode([a]) == replace_token]
-    if vector.ndim == 2:
-        vector = pz.nx.wrap(vector, "batch", "embedding")
-    else:
-        vector = pz.nx.wrap(vector, "embedding")
+    
+    vector = wrap_vector(vector)
+
     act_rep = llama.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).apply(
         lambda x: pz.nn.Sequential([ActivationReplacement(
             vector, position=position) for position in positions] + [x]))
+    return act_rep
+
+def replace_activation_many(llama, vectors: list, positions=None, prompt=None, tokenizer=None, replace_tokens=["X"], layers=[0]):
+    if positions is None:
+        positions = [[i for i, a in enumerate(tokenizer.encode(prompt)) if tokenizer.decode([a]) == replace_token] for replace_token in replace_tokens]
+    vectors = [
+        wrap_vector(vector) for vector in vectors
+    ]
+    act_rep = llama
+    for vector, position, layer in zip(vectors, positions, layers):
+        act_rep = act_rep.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).apply(
+            lambda x: pz.nn.Sequential([ActivationReplacement(
+                vector, position=p) for p in position] + [x]))
     return act_rep

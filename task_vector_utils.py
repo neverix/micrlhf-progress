@@ -229,6 +229,7 @@ def get_tv(resids, tokens, sep=1599, shift=None):
 
     return tv.mean(axis=0)
 
+
 class ICLRunner:
     def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128):
         self.task = task
