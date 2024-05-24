@@ -2919,6 +2919,24 @@ files = [
 windows-terminal = ["colorama (>=0.4.6)"]
 
 [[package]]
+name = "pylops"
+version = "2.2.0"
+description = "Python library implementing linear operators to allow solving large-scale optimization problems"
+optional = false
+python-versions = "*"
+files = [
+    {file = "pylops-2.2.0-py3-none-any.whl", hash = "sha256:60f8d4dfd8779255cf004dceb86694bb678479ca22248030e2af04f48bd1c50b"},
+    {file = "pylops-2.2.0.tar.gz", hash = "sha256:bcb3ba15f2b052b5fc369f1302ce5d1488310a59c3fa9a68b38675e957b147b1"},
+]
+
+[package.dependencies]
+numpy = ">=1.21.0"
+scipy = ">=1.4.0"
+
+[package.extras]
+advanced = ["PyWavelets", "llvmlite", "numba", "pyfftw", "scikit-fmm", "spgl1"]
+
+[[package]]
 name = "pyparsing"
 version = "3.1.2"
 description = "pyparsing module - Classes and methods to define and execute parsing grammars"
@@ -4472,4 +4490,4 @@ testing = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "f07bd6bda2c5dcd41cd46adb1e34ac7fa4af0e220244513e124f2dccd9f558df"
+content-hash = "d233b395eb2f8e30fc36279e0185ec5eb18cd5abca7691d8188df6842c9ccf34"
