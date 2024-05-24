@@ -48,6 +48,8 @@ replicate = "^0.26.0"
 distribute = "^0.7.3"
 python-dotenv = "^1.0.1"
 anthropic = "^0.26.1"
+jax-smi = "^1.0.3"
+pylops = "^2.2.0"
 
 [build-system]
 requires = ["poetry-core"]
