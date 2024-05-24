@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Literal
+from typing import Literal, Union
 
 import jax
 import jax.numpy as jnp
@@ -45,10 +45,14 @@ class ActivationReplacement(pz.Layer):
 @pz.pytree_dataclass
 class ActivationAddition(pz.Layer):
     addition: pz.nx.NamedArray
-    position: Literal["all", "last", "first"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
+    position: Union[Literal["all", "last", "first"], jnp.ndarray] = dataclasses.field(metadata={"pytree_node": False}, default="all")
     size_cond: Literal["all", "last"] = dataclasses.field(metadata={"pytree_node": False}, default="all")
     
     def adder(self, a, b):
+
+        if isinstance(self.position, jnp.ndarray):
+            return a.at[self.position].add(b)
+
         if self.position == "all":
             return a + b
         elif self.position == "last":
@@ -57,10 +61,53 @@ class ActivationAddition(pz.Layer):
             return a.at[0].add(b)
     
     def __call__(self, x):
+        if isinstance(self.position, jnp.ndarray):
+
+            def f(a, b):
+                return a.at[b].add(self.addition.unwrap("embedding"))
+
+            return pz.nx.wrap(jax.vmap(f)(x.unwrap("batch", "seq", "embedding"), self.position), "batch", "seq", "embedding")
+
+            
         return pz.nx.nmap(lambda a, b: jax.lax.select(
             self.size_cond == "all" or len(a) > 1, self.adder(a, b).astype(a), a))(
             x.untag("seq"), self.addition).tag("seq")
 
+
+@pz.pytree_dataclass
+class ActivationSet(pz.Layer):
+    direction: pz.nx.NamedArray
+    value: pz.nx.NamedArray
+    
+    def setter(self, a, b, v):
+        b = b / (jnp.linalg.norm(b) + 1e-10)
+        a = a + b * (v - (a * b).sum(-1, keepdims=True))
+        return a
+    
+    def __call__(self, x):
+        y = pz.nx.nmap(lambda a, b, v: self.setter(a, b, v).astype(a))(
+            x.untag("embedding"), self.direction.untag("embedding"), self.value)
+        return y.tag("embedding")
+
+def set_direction(llama, direction, value, layer, batch_axis="batch"):
+    if direction.ndim == 2:
+        direction = pz.nx.wrap(direction, batch_axis, "embedding")
+    else:
+        direction = pz.nx.wrap(direction, "embedding")
+    if isinstance(value, float):
+        value = jnp.array(value)
+    if isinstance(value, jnp.ndarray):
+        if value.ndim == 1:
+            value = pz.nx.wrap(value, batch_axis)
+        else:
+            value = pz.nx.wrap(value)
+    act_set = llama.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).apply(
+        lambda x: pz.nn.Sequential(
+            [
+                ActivationSet(direction, value),
+                x
+            ]))
+    return act_set
 
 def ablate_direction(llama, direction, normalize=True, batch_axis="batch"):
     if direction.ndim == 2:
