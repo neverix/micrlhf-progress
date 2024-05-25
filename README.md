@@ -59,6 +59,7 @@ git clone https://github.com/anthropics/evals.git data/eval_source_data/anthropi
 wget -c 'https://people.eecs.berkeley.edu/~hendrycks/data.tar' -O data/mmlu.tar
 mkdir -p data/sycophancy
 wget -c 'https://github.com/meg-tong/sycophancy-eval/raw/main/datasets/answer.jsonl' -O data/sycophancy/answer.jsonl
+wget -c 'https://github.com/meg-tong/sycophancy-eval/raw/main/datasets/feedback.jsonl' -O data/sycophancy/feedback.jsonl
 ```
 
 ## Install pprof
