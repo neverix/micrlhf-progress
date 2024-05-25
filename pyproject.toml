@@ -50,6 +50,9 @@ python-dotenv = "^1.0.1"
 anthropic = "^0.26.1"
 jax-smi = "^1.0.3"
 pylops = "^2.2.0"
+langchain = "^0.2.1"
+langchain-anthropic = "^0.1.13"
+langchain-community = "^0.2.1"
 
 [build-system]
 requires = ["poetry-core"]
