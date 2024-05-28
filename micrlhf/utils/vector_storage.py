@@ -87,7 +87,11 @@ def load_vector_from_path(load_path: Path) -> Union[jnp.ndarray, pz.nx.NamedArra
         data = jnp.asarray(data)
         return pz.nx.NamedArray(OrderedDict(shape.tolist()), data)
 
-    return jnp.asarray(jnp.load(load_path)["data"])
+    data = jnp.load(load_path)["data"]
+    if data.dtype == 'V2':
+        data = data.view(jnp.bfloat16)
+
+    return jnp.asarray(data)
 
 def download_vector(name: str, overwrite: bool = False) -> Union[jnp.ndarray, pz.nx.NamedArray]:
     repo_path = Path(REPO_NAME) / REPO_PATH_PREFIX / name
