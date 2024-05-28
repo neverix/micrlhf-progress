@@ -24,6 +24,8 @@ def get_sae(layer=20, revision=5, idx=0, model_dir="models", return_fname=False)
     return sae_weights
 
 def sae_encode(sae, vector):
+    if "s_gate" in sae:
+        return sae_encode_gated(sae, vector)
     pre_relu = vector @ sae["W_enc"] + sae["b_enc"]
     post_relu = jax.nn.relu(pre_relu) * sae["scaling_factor"]
     decoded = post_relu @ sae["W_dec"] + sae["b_dec"]
