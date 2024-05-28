@@ -28,3 +28,18 @@ def sae_encode(sae, vector):
     post_relu = jax.nn.relu(pre_relu) * sae["scaling_factor"]
     decoded = post_relu @ sae["W_dec"] + sae["b_dec"]
     return pre_relu, post_relu, decoded
+
+def sae_encode_gated(sae, vector, ablate_features=None):
+    inputs = vector
+    pre_relu = inputs @ sae["W_enc"]
+    pre_relu = pre_relu +sae["b_enc"]
+    post_relu = jax.nn.relu(pre_relu)
+    
+    post_relu = (post_relu > 0) * jax.nn.relu((inputs @ sae["W_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
+
+    if ablate_features is not None:
+        post_relu = post_relu.at[ablate_features].set(0)
+
+    recon = post_relu @ sae["W_dec"] + sae["b_dec"]
+
+    return pre_relu, post_relu, recon
