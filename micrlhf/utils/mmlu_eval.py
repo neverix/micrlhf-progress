@@ -34,12 +34,12 @@ class MMLUEval(object):
                     dataset.append(combined_prompt.format(*r.tolist()))
         self.dataset = dataset
 
-    def evaluate(self, llama, tokenizer, batch_size=128):
+    def evaluate(self, llama, tokenizer, batch_size=128, verbose=True):
         ps = tokenizer.padding_side
         tokenizer.padding_side = "right"
         llama_call = jit_wrapper.Jitted(sequential_to_scan(llama))
         accuracies = []
-        for batch in chunked(tqdm(self.dataset), batch_size):
+        for batch in chunked((tqdm(self.dataset) if verbose else self.dataset), batch_size):
             og_batch_size = len(batch)
             batch = batch + [""] * (batch_size - len(batch))
             tokens = tokenizer.batch_encode_plus(batch,

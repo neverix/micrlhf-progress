@@ -80,6 +80,7 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
         tokens = [t + [pad_token_id] * (max_seq_len - len(t)) for t in tokens]
         batch_size = len(tokens)
 
+    assert initial_length < max_seq_len
     tokens = pz.nx.wrap(jnp.asarray(tokens, dtype=jnp.int32), "batch", "seq")
     base_mask = pz.nx.wrap(jnp.asarray(mask, dtype=jnp.bool_), "batch", "seq")
     offsets = pz.nx.wrap(jnp.asarray(offsets, dtype=jnp.int32), "batch")
