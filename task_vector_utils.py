@@ -348,7 +348,7 @@ class FeatureSearch:
         return taker
     
     def get_loss(self, weights):
-        if self.sae_v == 4:
+        if "s_gate" in self.sae:
             weights = (weights > 0) * jax.nn.relu(weights * jax.nn.softplus(self.sae["s_gate"]) * self.sae["scaling_factor"] + self.sae["b_gate"])   
         else:
             weights = jax.nn.relu(weights)
