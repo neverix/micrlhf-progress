@@ -115,13 +115,23 @@ def matmul_8bit_fast(quants, scale, inputs, mesh, batch_axis="dp", in_axis=None,
     scale = scale.astype(jnp.bfloat16)
 
     block_x, block_y, block_k = 256, 256, 512
-    if inputs.shape[0] < block_x:
-        block_x = max(16, int(2 ** np.floor(np.log2(inputs.shape[0]))))
-    og_shape = inputs.shape
-    inputs = jnp.pad(inputs, ((0, max(0, block_x - inputs.shape[0])), (0, 0)))
+    per_block_size = inputs.shape[0] // mesh.shape[batch_axis]
+    per_mp_input_size = inputs.shape[1] // (mesh.shape[in_axis] if in_axis is not None else 1)
+    per_mp_output_size = quants.shape[2] // (mesh.shape[out_axis] if out_axis is not None else 1)
+    if per_block_size < block_x:
+        block_x = max(16, int(2 ** np.floor(np.log2(per_block_size))))
+    if per_mp_input_size < block_k:
+        block_k = max(16, int(2 ** np.floor(np.log2(per_mp_input_size))))
+    if per_mp_output_size < block_y:
+        block_y = max(16, int(2 ** np.floor(np.log2(per_mp_output_size))))
+    inputs_og_shape = inputs.shape
+    inputs = jnp.pad(inputs.reshape(inputs.shape[0] // per_block_size, per_block_size, -1, per_mp_input_size),
+                     ((0, 0), (0, max(0, block_x - per_block_size)), (0, 0), (0, max(0, block_k - per_mp_input_size)))
+                     ).reshape(-1, inputs.shape[-1])
+    quants = jnp.pad(quants, ((0, 0), (0, 0), (0, max(0, block_y - quants.shape[2]))))
 
-    result = jax.experimental.shard_map.shard_map(
-        lambda quants, scale, inputs: pl.pallas_call(
+    def kernel_call(quants, scale, inputs):
+        outputs = pl.pallas_call(
             partial(matmul_8bit_kernel, block_k=block_k, quant_group_size=quants.shape[1]),
             grid_spec=pltpu.PrefetchScalarGridSpec(
                 num_scalar_prefetch=0,
@@ -137,8 +147,15 @@ def matmul_8bit_fast(quants, scale, inputs, mesh, batch_axis="dp", in_axis=None,
                 scratch_shapes=[pltpu.VMEM((block_x, block_y), jnp.float32)],
             ),
             out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
-            compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "parallel"))),
-        )(quants, scale, inputs),
+            compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "arbitrary"))),
+            interpret=True
+        )(quants, scale, inputs)
+        if in_axis is not None:
+            outputs = jax.lax.psum(outputs, axis_name=in_axis)
+        return outputs
+
+    result = jax.experimental.shard_map.shard_map(
+        lambda quants, scale, inputs: kernel_call(quants, scale, inputs),
         mesh=mesh,
         in_specs=(
             P(in_axis, None, out_axis),
@@ -148,7 +165,8 @@ def matmul_8bit_fast(quants, scale, inputs, mesh, batch_axis="dp", in_axis=None,
         out_specs=P(batch_axis, out_axis),
         check_rep=False
     )(quants, scale, inputs)
-    return result[:og_shape[0]]
+    return result.reshape(inputs.shape[0] // block_x, block_x, -1, block_y
+                          )[:, :per_block_size, :, :per_mp_output_size].reshape(inputs_og_shape[0], -1)
 
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
