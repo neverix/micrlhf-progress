@@ -14,11 +14,18 @@ class ScanSequential(pz.Layer):
             jax.tree_map(lambda x: x.untag("layer"), self.layer))[0]
 
 
-def sequential_to_scan(model, sequential_n=1):
+def sequential_to_scan(model, sequential_n=1, return_aux=True):
+    aux = {}
     def fn(seq):
+        nonlocal aux
         layers = seq.sublayers
         layers = [l for l in layers if not isinstance(l, pz.nn.Identity)]
         layer = jax.tree_map(lambda *xs: pz.nx.stack(xs, "layer"), *layers)
-        return ScanSequential(layer)
+        folded = ScanSequential(layer)
+        aux["n_layers"] = len(layers)
+        return folded
 
-    return model.select().at_instances_of(pz.nn.Sequential).pick_nth_selected(sequential_n).apply(fn)
+    result = model.select().at_instances_of(pz.nn.Sequential).pick_nth_selected(sequential_n).apply(fn)
+    if return_aux:
+        return result, aux
+    return result

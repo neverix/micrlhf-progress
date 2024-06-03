@@ -54,6 +54,7 @@ langchain = "^0.2.1"
 langchain-anthropic = "^0.1.13"
 langchain-community = "^0.2.1"
 pytest = "^8.2.1"
+black = "^24.4.2"
 
 [build-system]
 requires = ["poetry-core"]

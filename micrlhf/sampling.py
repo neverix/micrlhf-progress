@@ -62,7 +62,10 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
            strip_padding: bool = True,
            return_only_completion: bool = False,
            seed: Optional[int] = None,
-           verbose: bool = True,):
+           verbose: bool = True,
+           fold: bool = False,
+           use_jit: bool = True,
+           ):
     if getattr(tokenizer, "pad_token_id", None) is not None:
         pad_token_id = tokenizer.pad_token_id
     if isinstance(prompt, str):
@@ -87,7 +90,10 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
     if isinstance(llama, tuple):
         llama_cached, cache = llama
     else:
-        llama_cached, cache = LlamaKVCachingTransformer.from_uncached(llama, max_seq_len, {"batch": batch_size})
+        llama_cached, cache = LlamaKVCachingTransformer.from_uncached(llama,
+                                                                      max_seq_len,
+                                                                      {"batch": batch_size},
+                                                                      fold=fold)
     if return_model:
         llama_base = llama_cached
     if return_model:
@@ -99,17 +105,18 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
                                       positions=base_inputs.positions - offsets,
                                       attention_mask=base_inputs.attention_mask & base_mask.untag("seq").tag("kv_seq")
                                       )
-    logits, cache = call_llama(llama_cached, base_inputs)
-    cache = dataclasses.replace(cache, cache_end_index=initial_length)
+    with jax.disable_jit(disable=not use_jit):
+        logits, cache = call_llama(llama_cached, base_inputs)
+        cache = dataclasses.replace(cache, cache_end_index=initial_length)
 
-    key = jax.random.key(seed if seed is not None else random.randrange(0, 2**32))
-    # generate
-    advanced, tokens, key = sample_logits(logits, tokens, cache, key, do_sample=do_sample)
+        key = jax.random.key(seed if seed is not None else random.randrange(0, 2**32))
+        # generate
+        advanced, tokens, key = sample_logits(logits, tokens, cache, key, do_sample=do_sample)
 
-    for _ in (trange(max_seq_len - initial_length) if verbose else range(max_seq_len - initial_length)):
-        advanced, tokens, cache, key = sample_step(llama_cached, advanced, tokens, cache, key,
-                                                   base_mask, offsets, do_sample=do_sample)
-        # bar.set_description(tokenizer.decode(tokens.untag("batch", "seq").data_array[0]))
+        for _ in (trange(max_seq_len - initial_length) if verbose else range(max_seq_len - initial_length)):
+            advanced, tokens, cache, key = sample_step(llama_cached, advanced, tokens, cache, key,
+                                                    base_mask, offsets, do_sample=do_sample)
+            # bar.set_description(tokenizer.decode(tokens.untag("batch", "seq").data_array[0]))
 
 
     tokens = tokens.untag("batch", "seq").data_array
