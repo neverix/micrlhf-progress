@@ -2,7 +2,7 @@
 import dataclasses
 import itertools
 import os
-from typing import Any, Literal, Optional
+from typing import Iterable, Literal, Optional
 
 import jax
 import jax.numpy as jnp
@@ -11,7 +11,7 @@ import numpy as np
 from penzai import pz  # ez
 from penzai.toolshed import sharding_util
 
-from .gguf import GGUFReader
+from .gguf import read_gguf
 from .quantizers import make_linear, make_param
 from .sharding import ConstrainedSharding, WithConstantSideInputsNonPytree
 
@@ -345,14 +345,14 @@ class LlamaTransformer(pz.Layer):
         return mesh
 
     @classmethod
-    def from_pretrained(cls, gguf_path: os.PathLike,
+    def from_pretrained(cls, gguf_path: os.PathLike | Iterable[os.PathLike],
                         from_type: Literal[None, "gemma"] = None,
                         device_map="auto", extract_layer=None,
                         load_eager=False,
                         transpose_rotary: Optional[bool] = None):
         mesh = cls.make_mesh(device_map)
         
-        gguf = GGUFReader(gguf_path)
+        gguf = read_gguf(gguf_path)
         if from_type == "gemma":
             gguf.replace_metadata_prefix("gemma.", "llama.")
         config = LlamaConfig(

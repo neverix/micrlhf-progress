@@ -2,10 +2,12 @@
 # inspired by https://github.com/99991/pygguf/blob/main/gguf.py
 import os
 import struct
+from typing import Iterable
 
 import numpy as np
 
 GGUF_DATA_TYPE = {
+    2: "uint16",
     4: "uint32",
     5: "int32",
     6: "float32",
@@ -38,6 +40,38 @@ GGUF_BLOCK_STRIDES = {
 GGUF_DATA_TYPE_INV = {v: k for k, v in GGUF_DATA_TYPE.items()}
 
 
+def read_gguf(filename: os.PathLike | Iterable[os.PathLike]):
+    if isinstance(filename, (list, tuple)):
+        return GGUFMultiplexer([GGUFReader(f) for f in filename])
+    else:
+        return GGUFReader(filename)
+
+class GGUFMultiplexer(object):
+    def __init__(self, ggufs):
+        self.ggufs = ggufs
+
+    def replace_metadata_prefix(self, prefix, new_prefix):
+        for gguf in self.ggufs:
+            gguf.replace_metadata_prefix(prefix, new_prefix)
+
+    @property
+    def metadata(self):
+        return {k: v for gguf in self.ggufs for k, v in gguf.metadata.items()}
+
+    def keys(self):
+        return {k for gguf in self.ggufs for k in gguf.keys()}
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __getitem__(self, key):
+        for gguf in self.ggufs:
+            try:
+                return gguf[key]
+            except KeyError:
+                pass
+        raise KeyError(f"Key {key} not found")
+
 
 class GGUFReader(object):
     def __init__(self, filename: os.PathLike):
@@ -58,7 +92,8 @@ class GGUFReader(object):
         return iter(self.gguf_tensors)
 
     def __getitem__(self, key):
-        assert key in self.gguf_tensors, f"Key {key} not found"
+        if key not in self.gguf_tensors:
+            raise KeyError(f"Key {key} not found")
         tensor = self.gguf_tensors[key]
         start, end = tensor["offset"], tensor["offset"] + tensor["size"]
         data = self.mmap[start:end]
@@ -116,10 +151,12 @@ def read_gguf_kv(f):
 
 
 def read_gguf_value(f, value_type):
-    assert value_type in GGUF_DATA_TYPE
+    assert value_type in GGUF_DATA_TYPE, "GGUF value not found!"
     value_type = GGUF_DATA_TYPE[value_type]
     if value_type == "string":
         return read_gguf_string(f)
+    elif value_type == "uint16":
+        return struct.unpack("<H", f.read(2))[0]
     elif value_type == "uint32":
         return struct.unpack("<I", f.read(4))[0]
     elif value_type == "int32":

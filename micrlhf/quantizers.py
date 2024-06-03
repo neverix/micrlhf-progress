@@ -46,8 +46,6 @@ def make_linear(old_linear: pz.nn.Linear,
     in_axis = find_axis(old_linear.input_axes.keys())
     out_axis = find_axis(old_linear.output_axes.keys())
     if quant_type == "q8_0":
-        raise NotImplementedError(
-            "Use load_eager=True. 8-bit quantization is broken with multiple axes and input axis model parallel.")
         return Linear8bitTranspose(
             in_features=old_linear.input_axes,
             out_features=old_linear.output_axes,
