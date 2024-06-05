@@ -5,6 +5,12 @@ import equinox as eqx
 import jax
 import numpy as np
 from penzai import pz
+import penzai.data_effects.local_state
+
+
+jax.tree_util.register_dataclass(penzai.data_effects.local_state.LocalStateEffectImpl,
+                                 ["_state"],
+                                 ["_handler_id"])
 
 
 def is_nx(x):
@@ -18,7 +24,7 @@ class ScanSequential(pz.Layer):
 
     # @jax.jit
     def __call__(self, inputs):
-        layer_nx, layer_base = eqx.partition(self.layer, is_nx, is_leaf=is_nx)
+        layer_nx, layer_base = eqx.partition(self.layer, is_nx, is_leaf=lambda x: is_nx(x) and not isinstance(x, pz.de.EffectRuntimeImpl))
         def untag_layer(x):
             if x is None:
                 return x

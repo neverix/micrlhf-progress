@@ -199,6 +199,7 @@ class Linear8bitTranspose(QuantizedLinear):
         return self.batch_axis, self.in_axis or "in_features", self.out_axis or "out_features"
 
     @property
+    @jax.jit
     def sped_up_params(self):
         scale, quants = self.scale, self.quants
         if self.sped_up:
@@ -215,8 +216,6 @@ class Linear8bitTranspose(QuantizedLinear):
         return scale, quants
 
     def speedup_matmul(self):
-        if self.sped_up:
-            return self
         scale, quants = self.sped_up_params
         return dataclasses.replace(self, scale=scale, quants=quants, sped_up=True)
 

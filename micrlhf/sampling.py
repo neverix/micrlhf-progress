@@ -64,7 +64,6 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
            return_only_completion: bool = False,
            seed: Optional[int] = None,
            verbose: bool = True,
-           fold: bool = False,
            use_jit: bool = True,
            cache_kwargs: Optional[OrderedDict] = None,
            ):
@@ -92,7 +91,8 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
     if isinstance(llama, tuple):
         llama_cached, cache = llama
     else:
-        llama_cached, cache = (FoldedLlamaKVCachingTransformer if fold else LlamaKVCachingTransformer).from_uncached(llama,
+        raise ValueError("Please pass a pre-cached model.")
+        llama_cached, cache = LlamaKVCachingTransformer.from_uncached(llama,
                                                                       max_seq_len,
                                                                       {"batch": batch_size},
                                                                       **(cache_kwargs if cache_kwargs else {}))

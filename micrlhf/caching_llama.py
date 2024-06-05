@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from penzai import pz
 
-from .llama import LlamaAttention, LlamaConfig, LlamaTransformer
+from .llama import LlamaAttention, LlamaConfig, LlamaTransformer, LlamaInputs
 from .scan import sequential_to_scan
 
 
@@ -205,13 +205,22 @@ class LlamaKVCachingTransformer(pz.Layer):
     def inputs(self):
         return LlamaKVCachingInputs
 
+    def to_tpu(self):
+        return (self
+                .select()
+                .at_instances_of(LlamaTransformer)
+                .apply(lambda x: x.to_tpu()))
+
+
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
 class FoldedLlamaKVCachingTransformer(LlamaKVCachingTransformer):
     @pz.checked_layer_call
     def __call__(self, inputs: LlamaKVCachingInputs) -> tuple[pz.nx.NamedArray, LlamaKVCachingState]:
         outs, kv_caches = self.body((
                 (
-                        (inputs.tokens, inputs.positions, inputs.attention_mask),
+                        LlamaInputs(tokens=inputs.tokens,
+                                    positions=inputs.positions,
+                                    attention_mask=inputs.attention_mask),
                         inputs.sampling_state.cache_end_index,
                 ),
                 inputs.sampling_state.kv_caches,
@@ -246,7 +255,7 @@ class FoldedLlamaKVCachingTransformer(LlamaKVCachingTransformer):
         }
         cached_axes["kv_heads"] = uncached.config.num_key_value_heads
         caching_body = (
-                pz.select(uncached.body)
+                pz.select(uncached)
                 .at_instances_of(LlamaAttention)
                 .apply(
                         lambda attn: LlamaKVCachingAttention.from_uncached(
