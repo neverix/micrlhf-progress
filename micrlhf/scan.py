@@ -7,44 +7,19 @@ import equinox as eqx
 import jax
 import numpy as np
 from penzai import pz
-import penzai.data_effects.local_state
 from penzai.data_effects.local_state import LocalStateEffect, LocalStateEffectImpl
 from penzai.data_effects import effect_base
 
 
-_T = typing.TypeVar("_T")
-
-
-@dataclasses.dataclass
-class MyLocalStateEffectImpl(Generic[_T], LocalStateEffectImpl[_T]):
-    _state: _T
-    _handler_id: effect_base.HandlerId
-
-    def handler_id(self) -> effect_base.HandlerId:
-        return self._handler_id
-
-    @classmethod
-    def effect_protocol(cls):
-        return LocalStateEffect
-
-    def get(self) -> _T:
-        return self._state
-
-    def set(self, value: _T):
-        self._state = jax.tree_map(lambda s, v: s.at[...].set(v),
-                                   self._state,
-                                   value)
-
-
+def set_(self, _value):
+    self._state = jax.tree_map(lambda s, v: s.at[...].set(v),
+                               self._state, _value)
 try:
     jax.tree_util.register_dataclass(LocalStateEffectImpl,
                                     ["_state"],
                                     ["_handler_id"])
 except ValueError:
     pass
-jax.tree_util.register_dataclass(MyLocalStateEffectImpl,
-                                 ["_state"],
-                                 ["_handler_id"])
 
 
 def is_nx(x):
@@ -58,9 +33,10 @@ class ScanSequential(pz.Layer):
 
     # @jax.jit
     def __call__(self, inputs):
-        layer = self.layer.select().at_instances_of(LocalStateEffectImpl).apply(
-            lambda x: MyLocalStateEffectImpl(x._state, x._handler_id)
-        )
+        layer = self.layer
+        def set_set(lse):
+            lse.set = set_
+        layer = layer.select().at_instances_of(LocalStateEffectImpl).apply(set_set)
         layer_nx, layer_base = eqx.partition(layer, is_nx, is_leaf=lambda x: is_nx(x))
         def untag_layer(x):
             if x is None:
