@@ -7,19 +7,6 @@ import equinox as eqx
 import jax
 import numpy as np
 from penzai import pz
-from penzai.data_effects.local_state import LocalStateEffect, LocalStateEffectImpl
-from penzai.data_effects import effect_base
-
-
-def set_(self, _value):
-    self._state = jax.tree_map(lambda s, v: s.at[...].set(v),
-                               self._state, _value)
-try:
-    jax.tree_util.register_dataclass(LocalStateEffectImpl,
-                                    ["_state"],
-                                    ["_handler_id"])
-except ValueError:
-    pass
 
 
 def is_nx(x):
@@ -34,9 +21,6 @@ class ScanSequential(pz.Layer):
     # @jax.jit
     def __call__(self, inputs):
         layer = self.layer
-        def set_set(lse):
-            lse.set = set_
-        layer = layer.select().at_instances_of(LocalStateEffectImpl).apply(set_set)
         layer_nx, layer_base = eqx.partition(layer, is_nx, is_leaf=lambda x: is_nx(x))
         def untag_layer(x):
             if x is None:
@@ -69,14 +53,6 @@ def sequential_to_scan(model, sequential_n=(0, 0), return_aux=False, save_to_cpu
         layers = [l for l in layers if not isinstance(l, pz.nn.Identity)]
         weightses, treedefs = zip(*[eqx.partition(l, is_nx, is_leaf=is_nx) for l in layers])
         ws, tds = zip(*[jax.tree_util.tree_flatten(w, is_leaf=is_nx) for w in weightses])
-        # ws, tds = zip(*[jax.tree_util.tree_flatten(l, is_leaf=is_nx) for l in layers])
-        
-        # ws_ = []
-        # for ww in zip(*ws):
-        #     ws_.append(pz.nx.stack(ww, "layer"))
-        #     import time
-        #     time.sleep(2)
-        # w = ws_
         
         if save_to_cpu:
             w = jax.tree.map(lambda *ws: pz.nx.NamedArray(
@@ -84,10 +60,9 @@ def sequential_to_scan(model, sequential_n=(0, 0), return_aux=False, save_to_cpu
                 named_axes=OrderedDict([("layer", len(ws))] + list(ws[0].named_axes.items()))
             ), *ws, is_leaf=is_nx)
         else:
-            w = jax.tree.map(jax.jit(lambda *ws: pz.nx.stack(ws, "layer").untag("layer").with_positional_prefix().tag("layer")), *ws, is_leaf=is_nx)
-        # w = jax.tree.map(jax.jit(lambda *ws: SimpleNamespace(
-        #     untag=lambda t: np.array(ws)),
-        #     donate_argnums=list(range(len(ws)))), *ws, is_leaf=is_nx)
+            w = jax.tree.map(jax.jit(lambda *ws:
+                pz.nx.stack(ws, "layer").untag("layer").with_positional_prefix().tag("layer")),
+                             *ws, is_leaf=is_nx)
         
         weight = jax.tree_util.tree_unflatten(tds[0], w)
         layer = eqx.combine(weight, treedefs[0], is_leaf=is_nx)
