@@ -1,14 +1,48 @@
 import dataclasses
+from typing import Generic
 from collections import OrderedDict
+import typing
 
 import equinox as eqx
 import jax
 import numpy as np
 from penzai import pz
 import penzai.data_effects.local_state
+from penzai.data_effects.local_state import LocalStateEffect, LocalStateEffectImpl
+from penzai.data_effects import effect_base
 
 
-jax.tree_util.register_dataclass(penzai.data_effects.local_state.LocalStateEffectImpl,
+_T = typing.TypeVar("_T")
+
+
+@dataclasses.dataclass
+class MyLocalStateEffectImpl(Generic[_T], LocalStateEffectImpl[_T]):
+    _state: _T
+    _handler_id: effect_base.HandlerId
+
+    def handler_id(self) -> effect_base.HandlerId:
+        return self._handler_id
+
+    @classmethod
+    def effect_protocol(cls):
+        return LocalStateEffect
+
+    def get(self) -> _T:
+        return self._state
+
+    def set(self, value: _T):
+        self._state = jax.tree_map(lambda s, v: s.at[...].set(v),
+                                   self._state,
+                                   value)
+
+
+try:
+    jax.tree_util.register_dataclass(LocalStateEffectImpl,
+                                    ["_state"],
+                                    ["_handler_id"])
+except ValueError:
+    pass
+jax.tree_util.register_dataclass(MyLocalStateEffectImpl,
                                  ["_state"],
                                  ["_handler_id"])
 
@@ -20,11 +54,14 @@ def is_nx(x):
 @pz.pytree_dataclass
 class ScanSequential(pz.Layer):
     layer: pz.Layer
-    n_layers: int = dataclasses.field(metadata={"pytree_node": False}, default=None)
+    n_layers: int = dataclasses.field(metadata={"pytree_node": False})
 
     # @jax.jit
     def __call__(self, inputs):
-        layer_nx, layer_base = eqx.partition(self.layer, is_nx, is_leaf=lambda x: is_nx(x) and not isinstance(x, pz.de.EffectRuntimeImpl))
+        layer = self.layer.select().at_instances_of(LocalStateEffectImpl).apply(
+            lambda x: MyLocalStateEffectImpl(x._state, x._handler_id)
+        )
+        layer_nx, layer_base = eqx.partition(layer, is_nx, is_leaf=lambda x: is_nx(x))
         def untag_layer(x):
             if x is None:
                 return x

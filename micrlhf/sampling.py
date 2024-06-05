@@ -130,7 +130,7 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
     if return_model:
         return texts, (llama_base, cache_base)
     else:
-        return texts
+        return texts, cache
 
 
 def main(
