@@ -12,8 +12,9 @@ from penzai import pz
 from penzai.toolshed import jit_wrapper
 from tqdm.auto import trange
 
-from micrlhf.caching_llama import (LlamaKVCachingInputs, LlamaKVCachingState,
-                                   LlamaKVCachingTransformer, FoldedLlamaKVCachingTransformer)
+from micrlhf.caching_llama import (FoldedLlamaKVCachingTransformer,
+                                   LlamaKVCachingInputs, LlamaKVCachingState,
+                                   LlamaKVCachingTransformer)
 from micrlhf.llama import LlamaTransformer
 from micrlhf.tokenizer import load_tokenizer
 

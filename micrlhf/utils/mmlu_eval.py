@@ -2,8 +2,8 @@ import tarfile
 
 import jax
 import pandas as pd
-from penzai import pz
 from more_itertools import chunked
+from penzai import pz
 from tqdm.auto import tqdm
 
 from micrlhf.sampling import jit_wrapper, jnp

@@ -7,8 +7,8 @@ import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 from penzai import pz
 
-from .quantizers import QuantizedLinear
 from .llama import LlamaAttention
+from .quantizers import QuantizedLinear
 
 
 def common_axes(*named_arrays):

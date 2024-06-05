@@ -1,33 +1,29 @@
-from functools import partial
+import dataclasses
 from collections import OrderedDict
 
-import jax
-from penzai import pz
 import equinox as eqx
+import jax
 import numpy as np
-from penzai.core import struct
+from penzai import pz
 
 
 def is_nx(x):
     return isinstance(x, pz.nx.NamedArrayBase)
 
 
-@struct.pytree_dataclass
-class ConcatenatedArray(struct.Struct, pz.nx.NamedArrayBase):
-    pass
-
-
 @pz.pytree_dataclass
 class ScanSequential(pz.Layer):
     layer: pz.Layer
+    n_layers: int = dataclasses.field(metadata={"pytree_node": False}, default=None)
 
     # @jax.jit
     def __call__(self, inputs):
-        layer = jax.tree_map(
-            lambda x: x.untag("layer") if is_nx(x) and "layer" in x.named_axes else x,
-            self.layer,
-            is_leaf=is_nx)
-        layer_nx, layer_base = eqx.partition(layer, is_nx, is_leaf=is_nx)
+        layer_nx, layer_base = eqx.partition(self.layer, is_nx, is_leaf=is_nx)
+        def untag_layer(x):
+            if x is None:
+                return x
+            return x.untag("layer").with_positional_prefix()
+        layer_nx = jax.tree_map(untag_layer, layer_nx, is_leaf=is_nx)
         def scanner(h, l):
             l_ = eqx.combine(l, layer_base, is_leaf=is_nx)
             h_ = l_(h)
@@ -46,7 +42,7 @@ def pick_sequential(m, n):
     return pick_sequential(seq.at_children(), n[1:])
 
 
-def sequential_to_scan(model, sequential_n=(0, 0), return_aux=False):
+def sequential_to_scan(model, sequential_n=(0, 0), return_aux=False, save_to_cpu=False):
     aux = {}
     # @partial(jax.jit, donate_argnums=(0,))
     def fn(seq):
@@ -63,12 +59,13 @@ def sequential_to_scan(model, sequential_n=(0, 0), return_aux=False):
         #     time.sleep(2)
         # w = ws_
         
-        # w = jax.tree.map(jax.jit(lambda *ws: pz.nx.stack(ws, "layer"), donate_argnums=list(range(len(ws)))), *ws, is_leaf=is_nx)
-        
-        w = jax.tree.map(lambda *ws: pz.nx.NamedArray(
-            data_array=np.array([w.data_array for w in ws]),
-            named_axes=ws[0].named_axes
-        ), *ws, is_leaf=is_nx)
+        if save_to_cpu:
+            w = jax.tree.map(lambda *ws: pz.nx.NamedArray(
+                data_array=np.array([w.data_array for w in ws]),
+                named_axes=OrderedDict([("layer", len(ws))] + list(ws[0].named_axes.items()))
+            ), *ws, is_leaf=is_nx)
+        else:
+            w = jax.tree.map(jax.jit(lambda *ws: pz.nx.stack(ws, "layer").untag("layer").with_positional_prefix().tag("layer")), *ws, is_leaf=is_nx)
         # w = jax.tree.map(jax.jit(lambda *ws: SimpleNamespace(
         #     untag=lambda t: np.array(ws)),
         #     donate_argnums=list(range(len(ws)))), *ws, is_leaf=is_nx)
@@ -76,7 +73,7 @@ def sequential_to_scan(model, sequential_n=(0, 0), return_aux=False):
         weight = jax.tree_util.tree_unflatten(tds[0], w)
         layer = eqx.combine(weight, treedefs[0], is_leaf=is_nx)
         # layer = weight
-        folded = ScanSequential(layer)
+        folded = ScanSequential(layer, len(ws))
         aux["n_layers"] = len(layers)
         return folded
 

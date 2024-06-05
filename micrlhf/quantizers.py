@@ -9,8 +9,8 @@ import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
 from jax.experimental import pallas as pl
-from jax.sharding import PartitionSpec as P
 from jax.experimental.pallas import tpu as pltpu
+from jax.sharding import PartitionSpec as P
 from penzai import pz
 from penzai.toolshed import sharding_util
 
@@ -21,6 +21,7 @@ def make_linear(old_linear: pz.nn.Linear,
                 shape: Tuple[int],
                 mesh: Optional[jshard.Mesh] = None,
                 axis_name_to_mesh_name: Optional[Dict[str, str]] = None,
+                load_on_cpu: bool = False,
                 **kwargs
                 ) -> pz.nn.Linear:
     param = old_linear.select().at_instances_of(pz.nn.UninitializedParameter).get()
@@ -34,7 +35,8 @@ def make_linear(old_linear: pz.nn.Linear,
     for d in tensor_data:
         d = d.reshape(*old_linear.output_axes.values(),
                         *list(old_linear.input_axes.values())[:-1], -1, d.shape[-1])
-        d = device_put_named_sharded(d, (*old_linear.output_axes.keys(), *old_linear.input_axes.keys(), "quant_group"), mesh, axis_name_to_mesh_name)
+        d = device_put_named_sharded(d, (*old_linear.output_axes.keys(), *old_linear.input_axes.keys(), "quant_group"),
+                                     mesh, axis_name_to_mesh_name, load_on_cpu=load_on_cpu)
         axes = (*old_linear.input_axes.keys(), "quant_group", *old_linear.output_axes.keys())
         d = d.untag(*axes).tag(*axes)
         new_data.append(d)
@@ -53,9 +55,10 @@ def make_linear(old_linear: pz.nn.Linear,
             quants=new_data[1],
             dtype=param.value_structure.dtype,
             mesh=mesh,
+            batch_axis="dp",
             in_axis=in_axis,
             out_axis=out_axis
-        )
+        ).speedup_matmul()
     else:
         raise NotImplementedError(f"Quantization type {quant_type} not implemented")
 
@@ -108,7 +111,7 @@ def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 
-def matmul_8bit_fast(quants, scale, inputs, mesh, batch_axis="dp", in_axis=None, out_axis=None):
+def matmul_fast(kernel, quants, scale, inputs, mesh, batch_axis="dp", in_axis=None, out_axis=None):
     inputs = inputs.astype(jnp.bfloat16)
     scale = scale.astype(jnp.bfloat16)
 
@@ -124,17 +127,22 @@ def matmul_8bit_fast(quants, scale, inputs, mesh, batch_axis="dp", in_axis=None,
         block_k = max(16, int(2 ** np.floor(np.log2(per_mp_input_size))))
     if per_mp_output_size < block_y:
         block_y = max(16, int(2 ** np.floor(np.log2(per_mp_output_size))))
-    inputs = jnp.pad(inputs.reshape(inputs.shape[0] // per_block_size, per_block_size, -1, per_mp_input_size),
-                     ((0, 0), (0, (block_x - per_block_size) % block_x),
-                      (0, 0), (0, (block_k - per_mp_input_size) % block_k))
-                     )
-    inputs = inputs.reshape(-1, *inputs.shape[-2:])
-    inputs = inputs.reshape(inputs.shape[0], -1)
-    quants = jnp.pad(quants, ((0, 0), (0, 0), (0, (block_y - quants.shape[2]) % block_y)))
+    x_pad = (block_x - per_block_size) % block_x
+    k_pad = (block_k - per_mp_input_size) % block_k
+    if x_pad or k_pad:
+        inputs = jnp.pad(inputs.reshape(inputs.shape[0] // per_block_size, per_block_size, -1, per_mp_input_size),
+                        ((0, 0), (0, x_pad),
+                        (0, 0), (0, k_pad))
+                        )
+        inputs = inputs.reshape(-1, *inputs.shape[-2:])
+        inputs = inputs.reshape(inputs.shape[0], -1)
+    y_pad = (block_y - quants.shape[2]) % block_y
+    if y_pad:
+        quants = jnp.pad(quants, ((0, 0), (0, 0), (0, y_pad)))
 
     def kernel_call(quants, scale, inputs):
         outputs = pl.pallas_call(
-            partial(matmul_8bit_kernel, block_k=block_k, quant_group_size=quants.shape[1]),
+            partial(kernel, block_k=block_k, quant_group_size=quants.shape[1]),
             grid_spec=pltpu.PrefetchScalarGridSpec(
                 num_scalar_prefetch=0,
                 grid=(int(inputs.shape[0] / block_x), int(quants.shape[2] / block_y)),
@@ -167,10 +175,11 @@ def matmul_8bit_fast(quants, scale, inputs, mesh, batch_axis="dp", in_axis=None,
         out_specs=P(batch_axis, out_axis),
         check_rep=False
     )(quants, scale, inputs)
-    result = result.reshape(batch_mesh, inputs.shape[0] // batch_mesh, out_mesh, -1
-                          )[:, :per_block_size, :, :per_mp_output_size]
-    result = result.reshape(-1, *result.shape[-2:])
-    result = result.reshape(result.shape[0], -1)
+    if x_pad or y_pad:
+        result = result.reshape(batch_mesh, inputs.shape[0] // batch_mesh, out_mesh, -1
+                            )[:, :per_block_size, :, :per_mp_output_size]
+        result = result.reshape(-1, *result.shape[-2:])
+        result = result.reshape(result.shape[0], -1)
     return result
 
 
@@ -180,20 +189,44 @@ class Linear8bitTranspose(QuantizedLinear):
     quants: pz.nx.NamedArray
     dtype: jax.typing.DTypeLike = dataclasses.field(metadata={"pytree_node": False})
     mesh: jshard.Mesh = dataclasses.field(metadata={"pytree_node": False})
+    batch_axis: str = dataclasses.field(metadata={"pytree_node": False})
     in_axis: str = dataclasses.field(metadata={"pytree_node": False})
     out_axis: str = dataclasses.field(metadata={"pytree_node": False})
+    sped_up: bool = dataclasses.field(metadata={"pytree_node": False}, default=False)
 
-    def quant_linear(self, inputs: jnp.ndarray) -> jnp.ndarray:
+    @property
+    def axes(self):
+        return self.batch_axis, self.in_axis or "in_features", self.out_axis or "out_features"
+
+    @property
+    def sped_up_params(self):
         scale, quants = self.scale, self.quants
+        if self.sped_up:
+            return scale, quants
+        _, ia, oa = self.axes
         scale, quants = (
-            pz.nx.nmap(jnp.ravel)(
+            pz.nx.wrap(pz.nx.nmap(jnp.ravel)(
                 pz.nx.nmap(jnp.ravel)(tensor.untag(*self.in_features.keys())).tag("in_features")
             .untag(*self.out_features.keys())).tag("out_features")
-            .unwrap("in_features", "quant_group", "out_features")
+            .unwrap("in_features", "quant_group", "out_features"),
+            ia, "quant_group", oa)
             for tensor in (scale, quants)
         )
+        return scale, quants
+
+    def speedup_matmul(self):
+        if self.sped_up:
+            return self
+        scale, quants = self.sped_up_params
+        return dataclasses.replace(self, scale=scale, quants=quants, sped_up=True)
+
+    def quant_linear(self, inputs: jnp.ndarray) -> jnp.ndarray:
+        _, ia, oa = self.axes
+        scale, quants = self.sped_up_params
+        scale, quants = (t.unwrap(ia, "quant_group", oa) for t in (scale, quants))
         mesh = self.mesh
-        return matmul_8bit_fast(quants, scale, inputs, mesh)
+        return matmul_fast(matmul_8bit_kernel, quants, scale, inputs, mesh,
+                                batch_axis=self.batch_axis, in_axis=self.in_axis, out_axis=self.out_axis)
         # warnings.warn("Using slow 8-bit matmul, inputs too small")
         # weight = scale.astype(self.dtype) * quants
         # weight = weight.reshape(np.prod(list(self.in_features.values())), -1)
@@ -209,6 +242,7 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
                return_metadata: bool = False,
                is_transposed: bool = False,
                transpose_rotary: bool = True,
+               load_on_cpu: bool = False,
                ) -> pz.nn.Parameter:
     name = uninitialized_param.name 
     named_shape = uninitialized_param.value_structure.named_shape
@@ -250,16 +284,21 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
         dequantized = dequantized.T
     dequantized = dequantized.astype(dtype).reshape(*named_shape.values())
 
-    dequantized = device_put_named_sharded(dequantized, named_shape.keys(), mesh, axis_name_to_mesh_name)
+    dequantized = device_put_named_sharded(dequantized, named_shape.keys(),
+                                           mesh, axis_name_to_mesh_name,
+                                           load_on_cpu=load_on_cpu)
     return pz.nn.Parameter(
         dequantized,
         name,
     )
 
 
-def device_put_named_sharded(array, axis_names, mesh: Optional[jshard.Mesh], axis_name_to_mesh_name: Optional[Dict[str, str]]):
+def device_put_named_sharded(array, axis_names, mesh: Optional[jshard.Mesh], axis_name_to_mesh_name: Optional[Dict[str, str]],
+                             load_on_cpu: bool = False):
     array = jax.device_put(array, jax.devices("cpu")[0])
     array = pz.nx.wrap(array, *axis_names)
+    if load_on_cpu:
+        return array
     if mesh is None or axis_name_to_mesh_name is None:
         return array
     return sharding_util.name_to_name_device_put(

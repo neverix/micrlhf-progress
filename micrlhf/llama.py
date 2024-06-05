@@ -4,6 +4,7 @@ import itertools
 import os
 from typing import Iterable, Literal, Optional
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
@@ -283,6 +284,7 @@ class LlamaTransformer(pz.Layer):
                     pz.nn.ConstantRescale(
                         by=config.resid_rescale
                     ),
+                    ConstrainedSharding.from_config(),
                     pz.nn.add_parameter_prefix(
                         "blocks",
                         pz.nn.Sequential([
@@ -316,12 +318,13 @@ class LlamaTransformer(pz.Layer):
 
     @property
     def axis_name_to_mesh_name(self):
-        return {
+        base = {
             "neurons": "mp",
             "kv_heads": "mp",
             "seq": "sp",
             "batch": "dp",
         }
+        return {**base, **{v: v for v in set(base.values())}}
 
     @property
     def inputs(self):
@@ -349,7 +352,9 @@ class LlamaTransformer(pz.Layer):
                         from_type: Literal[None, "gemma"] = None,
                         device_map="auto", extract_layer=None,
                         load_eager=False,
-                        transpose_rotary: Optional[bool] = None):
+                        transpose_rotary: Optional[bool] = None,
+                        load_on_cpu=False,
+                        ):
         mesh = cls.make_mesh(device_map)
         
         gguf = read_gguf(gguf_path)
@@ -404,13 +409,13 @@ class LlamaTransformer(pz.Layer):
                 lambda linear: make_linear(linear, *gguf[param_mapping[
                     linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
                     ]], mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name,
-                                           transpose_rotary=transpose_rotary)
+                                           transpose_rotary=transpose_rotary, load_on_cpu=load_on_cpu)
             )
         transformer = transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
             lambda param: make_param(param, *gguf[param_mapping[param.name]],
                                      mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name,
                                      is_transposed=is_transposed[param.name],
-                                     transpose_rotary=transpose_rotary)
+                                     transpose_rotary=transpose_rotary, load_on_cpu=load_on_cpu)
         )
 
         return transformer
@@ -421,6 +426,12 @@ class LlamaTransformer(pz.Layer):
                 cs,
                 {"axis_name_to_mesh_name": self.axis_name_to_mesh_name, "mesh": self.mesh}
             )
+        )
+
+    def to_tpu(self):
+        return jax.device_put(
+            self, sharding_util.name_to_name_sharding(
+                self, self.mesh, self.axis_name_to_mesh_name, ignore_unnamed_arrays=True)
         )
 
 

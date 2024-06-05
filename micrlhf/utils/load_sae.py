@@ -1,8 +1,8 @@
 import os
 
+import jax
 from huggingface_hub import HfFileSystem
 from safetensors.flax import load_file
-import jax
 
 sae_cache = {}
 def get_sae(layer=20, revision=5, idx=0, model_dir="models", return_fname=False):
