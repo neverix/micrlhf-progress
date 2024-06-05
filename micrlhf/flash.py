@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 from penzai import pz
 
+from .quantizers import QuantizedLinear
 from .llama import LlamaAttention
 
 
@@ -95,7 +96,7 @@ class LlamaFlashAttention(pz.nn.Attention):
         masker = original.query_key_to_attn.select() \
             .at_instances_of(pz.nn.ApplyAttentionMask).pick_nth_selected(0).get()
         out_proj = original.attn_value_to_output.select() \
-            .at_instances_of(pz.nn.Linear).pick_nth_selected(0).get()
+            .at_instances_of((pz.nn.Linear, QuantizedLinear)).pick_nth_selected(0).get()
         
         return cls(
             input_to_query=original.input_to_query,

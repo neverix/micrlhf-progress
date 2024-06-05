@@ -93,3 +93,26 @@ def test_mp_dp_matmul():
         outputs = matmul_8bit(quants, scale, inputs)
         outputs_fast = matmul_8bit_fast(quants, scale, inputs, mesh, in_axis=in_axis, out_axis=out_axis)
         assert jnp.max(jnp.abs(outputs_fast - outputs)) == 0
+
+def test_mp_dp_matmul_irregular():
+    mesh = jax.sharding.Mesh(np.asarray(jax.devices("tpu")).reshape(2, -1), ("dp", "mp"))
+
+    bs = 32
+    # fails
+    a, b, c = bs * 19, 2 * 418, 2 * 346
+    for order in (-1, 1):
+        in_axis, out_axis = ("mp", None)[::order]
+        quants = jax.random.randint(jax.random.PRNGKey(0), (a // bs, bs, b), 0, 255, dtype=jnp.int8)
+        scale = jax.random.normal(jax.random.PRNGKey(1), (a // bs, 1, b), dtype=jnp.bfloat16) / 255
+        inputs = jax.random.normal(jax.random.PRNGKey(2), (c, a), dtype=jnp.bfloat16)
+        
+        quants_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(in_axis, None, out_axis))
+        scale_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(in_axis, None, out_axis))
+        inputs_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec("dp", in_axis))
+        quants = jax.device_put(quants, quants_sharding)
+        scale = jax.device_put(scale, scale_sharding)
+        inputs = jax.device_put(inputs, inputs_sharding)
+
+        outputs = matmul_8bit(quants, scale, inputs)
+        outputs_fast = matmul_8bit_fast(quants, scale, inputs, mesh, in_axis=in_axis, out_axis=out_axis)
+        assert jnp.max(jnp.abs(outputs_fast - outputs)) == 0

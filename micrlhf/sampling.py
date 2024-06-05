@@ -13,7 +13,7 @@ from penzai.toolshed import jit_wrapper
 from tqdm.auto import trange
 
 from micrlhf.caching_llama import (LlamaKVCachingInputs, LlamaKVCachingState,
-                                   LlamaKVCachingTransformer)
+                                   LlamaKVCachingTransformer, FoldedLlamaKVCachingTransformer)
 from micrlhf.llama import LlamaTransformer
 from micrlhf.tokenizer import load_tokenizer
 
@@ -65,6 +65,7 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
            verbose: bool = True,
            fold: bool = False,
            use_jit: bool = True,
+           cache_kwargs: Optional[OrderedDict] = None,
            ):
     if getattr(tokenizer, "pad_token_id", None) is not None:
         pad_token_id = tokenizer.pad_token_id
@@ -90,10 +91,10 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
     if isinstance(llama, tuple):
         llama_cached, cache = llama
     else:
-        llama_cached, cache = LlamaKVCachingTransformer.from_uncached(llama,
+        llama_cached, cache = (FoldedLlamaKVCachingTransformer if fold else LlamaKVCachingTransformer).from_uncached(llama,
                                                                       max_seq_len,
                                                                       {"batch": batch_size},
-                                                                      fold=fold)
+                                                                      **(cache_kwargs if cache_kwargs else {}))
     if return_model:
         llama_base = llama_cached
     if return_model:

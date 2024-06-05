@@ -205,8 +205,9 @@ class LlamaKVCachingTransformer(pz.Layer):
     def inputs(self):
         return LlamaKVCachingInputs
 
-@pz.pytree_dataclass
+@pz.pytree_dataclass(has_implicitly_inherited_fields=True)
 class FoldedLlamaKVCachingTransformer(LlamaKVCachingTransformer):
+    @pz.checked_layer_call
     def __call__(self, inputs: LlamaKVCachingInputs) -> tuple[pz.nx.NamedArray, LlamaKVCachingState]:
         outs, kv_caches = self.body((
                 (
