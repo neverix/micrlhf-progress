@@ -7,6 +7,7 @@ memory.prof
 scratch.ipynb
 nohup.out
 .env
+post_loader.py
 
 # Python gitignore
 
