@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from penzai import pz
 
-from .llama import LlamaAttention, LlamaConfig, LlamaTransformer, LlamaInputs
+from .llama import LlamaAttention, LlamaConfig, LlamaInputs, LlamaTransformer
 from .scan import sequential_to_scan
 
 

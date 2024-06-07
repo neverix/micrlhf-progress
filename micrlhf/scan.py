@@ -1,7 +1,7 @@
 import dataclasses
-from typing import Generic
-from collections import OrderedDict
 import typing
+from collections import OrderedDict
+from typing import Generic
 
 import equinox as eqx
 import jax
