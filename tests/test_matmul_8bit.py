@@ -1,4 +1,6 @@
-from micrlhf.quantizers import Linear8bitTranspose, matmul_8bit_fast
+from micrlhf.quantizers import Linear8bitTranspose, matmul_fast, matmul_8bit_kernel
+from functools import partial
+matmul_8bit_fast = partial(matmul_fast, kernel=matmul_8bit_kernel)
 import jax.numpy as jnp
 from penzai import pz
 import numpy as np
@@ -28,7 +30,7 @@ def test_simple_matmul():
     scale = jax.random.normal(jax.random.PRNGKey(1), (a // bs, 1, b), dtype=jnp.bfloat16) / 255
     inputs = jax.random.normal(jax.random.PRNGKey(2), (c, a), dtype=jnp.bfloat16)
     outputs = matmul_8bit(quants, scale, inputs)
-    outputs_fast = matmul_8bit_fast(quants, scale, inputs, mesh)
+    outputs_fast = matmul_8bit_fast(inputs, quants, scale, mesh=mesh)
     assert jnp.max(jnp.abs(outputs_fast - outputs)) == 0
 
 def test_dp_matmul():
@@ -49,7 +51,7 @@ def test_dp_matmul():
         inputs = jax.device_put(inputs, inputs_sharding)
 
         outputs = matmul_8bit(quants, scale, inputs)
-        outputs_fast = matmul_8bit_fast(quants, scale, inputs, mesh, in_axis=in_axis, out_axis=out_axis)
+        outputs_fast = matmul_8bit_fast(inputs, quants, scale, mesh=mesh, in_axis=in_axis, out_axis=out_axis)
         assert jnp.max(jnp.abs(outputs_fast - outputs)) == 0
 
 def test_mp_matmul():
@@ -70,7 +72,7 @@ def test_mp_matmul():
         inputs = jax.device_put(inputs, inputs_sharding)
 
         outputs = matmul_8bit(quants, scale, inputs)
-        outputs_fast = matmul_8bit_fast(quants, scale, inputs, mesh, in_axis=in_axis, out_axis=out_axis)
+        outputs_fast = matmul_8bit_fast(inputs, quants, scale, mesh=mesh, in_axis=in_axis, out_axis=out_axis)
         assert jnp.max(jnp.abs(outputs_fast - outputs)) == 0
 
 def test_mp_dp_matmul():
@@ -91,7 +93,7 @@ def test_mp_dp_matmul():
         inputs = jax.device_put(inputs, inputs_sharding)
 
         outputs = matmul_8bit(quants, scale, inputs)
-        outputs_fast = matmul_8bit_fast(quants, scale, inputs, mesh, in_axis=in_axis, out_axis=out_axis)
+        outputs_fast = matmul_8bit_fast(inputs, quants, scale, mesh=mesh, in_axis=in_axis, out_axis=out_axis)
         assert jnp.max(jnp.abs(outputs_fast - outputs)) == 0
 
 def test_mp_dp_matmul_irregular():
@@ -114,5 +116,5 @@ def test_mp_dp_matmul_irregular():
         inputs = jax.device_put(inputs, inputs_sharding)
 
         outputs = matmul_8bit(quants, scale, inputs)
-        outputs_fast = matmul_8bit_fast(quants, scale, inputs, mesh, in_axis=in_axis, out_axis=out_axis)
+        outputs_fast = matmul_8bit_fast(inputs, quants, scale, mesh=mesh, in_axis=in_axis, out_axis=out_axis)
         assert jnp.max(jnp.abs(outputs_fast - outputs)) == 0

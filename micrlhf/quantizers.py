@@ -86,7 +86,7 @@ class QuantizedLinear(pz.Layer):
         return pz.chk.Wildcard("output features")
 
 
-def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref, *, block_k, quant_group_size):
+def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=32):
     block_m = quants_ref.shape[2]
     
     accum_ref[...] = jnp.zeros_like(accum_ref)
@@ -111,16 +111,17 @@ def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 
-def matmul_fast(kernel, quants, scale, inputs, mesh, batch_axis="dp", in_axis=None, out_axis=None):
+def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, out_axis=None):
     inputs = inputs.astype(jnp.bfloat16)
-    scale = scale.astype(jnp.bfloat16)
+    tensors = [t if t.dtype.kind in ("V", "f") else t.astype(jnp.bfloat16) for t in tensors]
 
     block_x, block_y, block_k = 256, 256, 512
+    k, y = tensors[0].shape[0], tensors[0].shape[2]
     batch_mesh = mesh.shape[batch_axis]
     per_block_size = inputs.shape[0] // batch_mesh
     per_mp_input_size = inputs.shape[1] // (mesh.shape[in_axis] if in_axis is not None else 1)
     out_mesh = (mesh.shape[out_axis] if out_axis is not None else 1)
-    per_mp_output_size = quants.shape[2] // out_mesh
+    per_mp_output_size = y // out_mesh
     if per_block_size < block_x:
         block_x = max(16, int(2 ** np.floor(np.log2(per_block_size))))
     if per_mp_input_size < block_k:
@@ -136,19 +137,20 @@ def matmul_fast(kernel, quants, scale, inputs, mesh, batch_axis="dp", in_axis=No
                         )
         inputs = inputs.reshape(-1, *inputs.shape[-2:])
         inputs = inputs.reshape(inputs.shape[0], -1)
-    y_pad = (block_y - quants.shape[2]) % block_y
+    y_pad = (block_y - y) % block_y
     if y_pad:
-        quants = jnp.pad(quants, ((0, 0), (0, 0), (0, y_pad)))
+        tensors = [jnp.pad(t, ((0, 0), (0, 0), (0, y_pad))) for t in tensors]
 
-    def kernel_call(quants, scale, inputs):
+    def kernel_call(inputs, *tensors):
         outputs = pl.pallas_call(
-            partial(kernel, block_k=block_k, quant_group_size=quants.shape[1]),
+            partial(kernel, block_k=block_k),
             grid_spec=pltpu.PrefetchScalarGridSpec(
                 num_scalar_prefetch=0,
-                grid=(int(inputs.shape[0] / block_x), int(quants.shape[2] / block_y)),
+                grid=(int(inputs.shape[0] / block_x), int(y / block_y)),
                 in_specs=[
-                    pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], quants.shape[1], block_y)),
-                    pl.BlockSpec(lambda i, j: (0, 0, j), (quants.shape[0], 1, block_y)),
+                    pl.BlockSpec(lambda i, j: (0, 0, j), (t.shape[0], t.shape[1], block_y))
+                    for t in tensors
+                ] + [
                     pl.BlockSpec(lambda i, j: (i, 0), (block_x, inputs.shape[1])),
                 ],
                 out_specs=pl.BlockSpec(
@@ -156,25 +158,25 @@ def matmul_fast(kernel, quants, scale, inputs, mesh, batch_axis="dp", in_axis=No
                 ),
                 scratch_shapes=[pltpu.VMEM((block_x, block_y), jnp.float32)],
             ),
-            out_shape=jax.ShapeDtypeStruct((inputs.shape[0], quants.shape[2]), inputs.dtype),
+            out_shape=jax.ShapeDtypeStruct((inputs.shape[0], k), inputs.dtype),
             compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "arbitrary"))),
             # interpret=True
-        )(quants, scale, inputs)
+        )(inputs, *tensors)
         if in_axis is not None:
             outputs = jax.lax.psum(outputs, axis_name=in_axis)
         return outputs
 
     result = jax.experimental.shard_map.shard_map(
-        lambda quants, scale, inputs: kernel_call(quants, scale, inputs),
+        kernel_call,
         mesh=mesh,
         in_specs=(
-            P(in_axis, None, out_axis),
-            P(in_axis, None, out_axis),
             P(batch_axis, in_axis),
-        ),
+        ) + (
+            P(in_axis, None, out_axis),
+        ) * len(tensors),
         out_specs=P(batch_axis, out_axis),
         check_rep=False
-    )(quants, scale, inputs)
+    )(inputs, *tensors)
     if x_pad or y_pad:
         result = result.reshape(batch_mesh, inputs.shape[0] // batch_mesh, out_mesh, -1
                             )[:, :per_block_size, :, :per_mp_output_size]
