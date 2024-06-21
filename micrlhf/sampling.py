@@ -91,7 +91,6 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
     if isinstance(llama, tuple):
         llama_cached, cache = llama
     else:
-        raise ValueError("Please pass a pre-cached model.")
         llama_cached, cache = LlamaKVCachingTransformer.from_uncached(llama,
                                                                       max_seq_len,
                                                                       {"batch": batch_size},
