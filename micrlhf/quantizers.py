@@ -226,8 +226,8 @@ class Linear8bitTranspose(QuantizedLinear):
         scale, quants = self.sped_up_params
         scale, quants = (t.unwrap(ia, "quant_group", oa) for t in (scale, quants))
         mesh = self.mesh
-        return matmul_fast(matmul_8bit_kernel, quants, scale, inputs, mesh,
-                                batch_axis=self.batch_axis, in_axis=self.in_axis, out_axis=self.out_axis)
+        return matmul_fast(inputs, quants, scale, mesh=mesh, kernel=matmul_8bit_kernel,
+                           batch_axis=self.batch_axis, in_axis=self.in_axis, out_axis=self.out_axis)
         # warnings.warn("Using slow 8-bit matmul, inputs too small")
         # weight = scale.astype(self.dtype) * quants
         # weight = weight.reshape(np.prod(list(self.in_features.values())), -1)

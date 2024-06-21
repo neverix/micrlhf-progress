@@ -125,7 +125,7 @@ def ablate_direction(llama, direction, normalize=True, batch_axis="batch"):
         direction = pz.nx.wrap(direction, batch_axis, "embedding")
     else:
         direction = pz.nx.wrap(direction, "embedding")
-    act_abl = llama.select().at_instances_of(LlamaBlock).apply(
+    act_abl = llama.select().at_instances_of(pz.nn.Residual).apply(
         lambda x: pz.nn.Sequential(
             [
                 ActivationAblation(direction,
