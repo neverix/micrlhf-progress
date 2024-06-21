@@ -86,7 +86,7 @@ class QuantizedLinear(pz.Layer):
         return pz.chk.Wildcard("output features")
 
 
-def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=32):
+def matmul_8bit_kernel(inputs_ref, quants_ref, scale_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=32):
     block_m = quants_ref.shape[2]
     
     accum_ref[...] = jnp.zeros_like(accum_ref)
@@ -113,13 +113,14 @@ def matmul_8bit_kernel(quants_ref, scale_ref, inputs_ref, outputs_ref, accum_ref
 
 def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, out_axis=None):
     inputs = inputs.astype(jnp.bfloat16)
-    tensors = [t if t.dtype.kind in ("V", "f") else t.astype(jnp.bfloat16) for t in tensors]
+    tensors = [t if t.dtype.kind not in ("V", "f") else t.astype(jnp.bfloat16) for t in tensors]
 
     block_x, block_y, block_k = 256, 256, 512
-    k, y = tensors[0].shape[0], tensors[0].shape[2]
+    y = tensors[0].shape[2]
     batch_mesh = mesh.shape[batch_axis]
     per_block_size = inputs.shape[0] // batch_mesh
-    per_mp_input_size = inputs.shape[1] // (mesh.shape[in_axis] if in_axis is not None else 1)
+    input_size = inputs.shape[1]
+    per_mp_input_size = input_size // (mesh.shape[in_axis] if in_axis is not None else 1)
     out_mesh = (mesh.shape[out_axis] if out_axis is not None else 1)
     per_mp_output_size = y // out_mesh
     if per_block_size < block_x:
@@ -146,21 +147,21 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
             partial(kernel, block_k=block_k),
             grid_spec=pltpu.PrefetchScalarGridSpec(
                 num_scalar_prefetch=0,
-                grid=(int(inputs.shape[0] / block_x), int(y / block_y)),
+                grid=(int(inputs.shape[0] / block_x), int(per_mp_output_size / block_y)),
                 in_specs=[
+                    pl.BlockSpec(lambda i, j: (i, 0), (block_x, inputs.shape[1])),
+                ] + [
                     pl.BlockSpec(lambda i, j: (0, 0, j), (t.shape[0], t.shape[1], block_y))
                     for t in tensors
-                ] + [
-                    pl.BlockSpec(lambda i, j: (i, 0), (block_x, inputs.shape[1])),
                 ],
                 out_specs=pl.BlockSpec(
                     lambda i, j: (i, j), (block_x, block_y)
                 ),
                 scratch_shapes=[pltpu.VMEM((block_x, block_y), jnp.float32)],
             ),
-            out_shape=jax.ShapeDtypeStruct((inputs.shape[0], k), inputs.dtype),
+            out_shape=jax.ShapeDtypeStruct((inputs.shape[0], per_mp_output_size), inputs.dtype),
             compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "arbitrary"))),
-            # interpret=True
+            interpret=True
         )(inputs, *tensors)
         if in_axis is not None:
             outputs = jax.lax.psum(outputs, axis_name=in_axis)
