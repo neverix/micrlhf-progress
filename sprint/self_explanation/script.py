@@ -1,6 +1,7 @@
 import dspy
 import dsp
-secret_value_0 = ""
+import os
+secret_value_0 = os.getenv("GROQ_KEY")
 # temperature = 0.3
 temperature = 0.0
 llama_70b = dsp.modules.groq_client.GroqLM(secret_value_0,
