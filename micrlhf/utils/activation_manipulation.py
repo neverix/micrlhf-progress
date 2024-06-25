@@ -185,3 +185,13 @@ def replace_activation_many(llama, vectors: list, positions=None, prompt=None, t
             lambda x: pz.nn.Sequential([ActivationReplacement(
                 vector, position=p) for p in position] + [x]))
     return act_rep
+
+def collect_activations(llama):
+    get_resids = llama.select().at_instances_of(LlamaBlock).apply_with_selected_index(lambda i, x:
+        pz.nn.Sequential([
+            pz.de.TellIntermediate.from_config(tag=f"resid_pre_{i}"),
+            x
+        ])
+    )
+    get_resids = pz.de.CollectingSideOutputs.handling(get_resids, tag_predicate=lambda x: x.startswith("resid_pre"))
+    return get_resids
