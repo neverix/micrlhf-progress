@@ -1,5 +1,7 @@
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
+from FlagEmbedding import BGEM3FlagModel
+
 import torch
 torch.set_grad_enabled(False)
 import os
@@ -13,8 +15,9 @@ import json
 # results = [result for result in results if result["scale"] > 0]
 
 model_path = 'Alibaba-NLP/gte-large-en-v1.5'
-tokenizer = AutoTokenizer.from_pretrained(model_path)
-model = AutoModel.from_pretrained(model_path, trust_remote_code=True)
+# tokenizer = AutoTokenizer.from_pretrained(model_path)
+# model = AutoModel.from_pretrained(model_path, trust_remote_code=True)
+model = BGEM3FlagModel('BAAI/bge-m3', use_fp16=True)
 
 # # Tokenize the input texts
 # batch_dict = tokenizer(input_texts, max_length=8192, padding=True, truncation=True, return_tensors='pt')
@@ -29,10 +32,12 @@ model = AutoModel.from_pretrained(model_path, trust_remote_code=True)
 
 def find_embeddings(texts):
     with torch.inference_mode():
-        batch_dict = tokenizer(texts, max_length=8192, padding=True, truncation=True, return_tensors='pt')
+        # batch_dict = tokenizer(texts, max_length=128, padding=True, truncation=True, return_tensors='pt')
 
-        outputs = model(**batch_dict)
-        embeddings = outputs.last_hidden_state[:, 0]
+        # outputs = model(**batch_dict)
+        # embeddings = outputs.last_hidden_state[:, 0]
+        # embeddings = model.encode(**batch_dict)["dense_vecs"]
+        embeddings = torch.from_numpy(model.encode(texts)["dense_vecs"])
 
         # (Optionally) normalize embeddings
         embeddings = F.normalize(embeddings, p=2, dim=1)
@@ -40,7 +45,9 @@ def find_embeddings(texts):
         return embeddings
 
 # with open("gen_explanations_new.jsonl") as f:
-with open("../../data/gen_explanations_ss.jsonl") as f:
+postfix = "_ss"
+# postfix = "_new"
+with open(f"../../data/gen_explanations{postfix}.jsonl") as f:
     explanations = [json.loads(line) for line in f]
 
 from datasets import load_dataset
@@ -77,7 +84,8 @@ texts = [x for x in r["explanation"]]
 def find_score(theme, texts):
     embed_0, *embeds = find_embeddings([theme] + texts)
     scores = (torch.stack(embeds) @ embed_0) * 100
-    score = scores.mean().item()
+    # score = scores.mean().item()
+    score = scores.max().item()
     return score
 
 print(find_score(theme, texts))
@@ -106,7 +114,7 @@ for r in (bar := tqdm(explanations)):
     all_ratings.append(rating)
     bar.set_postfix(rating=rating, avg_rating=sum(all_ratings) / len(all_ratings))
 
-    with open("ratings_ss.jsonl", "a") as f:
+    with open(f"ratings{postfix}.jsonl", "a") as f:
         f.write(json.dumps(
             {
                 "id": r["id"],
