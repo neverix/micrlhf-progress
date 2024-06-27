@@ -66,6 +66,7 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
            verbose: bool = True,
            use_jit: bool = True,
            cache_kwargs: Optional[OrderedDict] = None,
+           cfg_strength: float = 1.0,
            ):
     if getattr(tokenizer, "pad_token_id", None) is not None:
         pad_token_id = tokenizer.pad_token_id
@@ -108,6 +109,12 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
                                       )
     with jax.disable_jit(disable=not use_jit):
         logits, cache = call_llama(llama_cached, base_inputs)
+        if cfg_strength != 1.0:
+            def apply_cfg(logits):
+                uncond, cond = jnp.split(logits, 2, axis=0)
+                cond = uncond + (cond - uncond) * cfg_strength
+                return jnp.concatenate((cond, cond), axis=0)
+            logits = pz.nx.nmap(apply_cfg)(logits.untag("batch")).tag("batch")
         cache = dataclasses.replace(cache, cache_end_index=initial_length)
 
         key = jax.random.key(seed if seed is not None else random.randrange(0, 2**32))

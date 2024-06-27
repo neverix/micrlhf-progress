@@ -49,7 +49,7 @@ wget -c 'https://huggingface.co/SanctumAI/Phi-3-mini-4k-instruct-GGUF/resolve/ma
 wget -c 'https://huggingface.co/failspy/kappa-3-phi-3-4k-instruct-abliterated-GGUF/resolve/main/ggml-model-f16.gguf?download=true' -O models/abl.gguf
 wget -c 'https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q8_0.gguf?download=true' -O models/tinyllama-1.1b-q8_0.gguf
 wget -c 'https://huggingface.co/mlabonne/gemma-2b-GGUF/resolve/main/gemma-2b.Q8_0.gguf?download=true' -O models/gemma-2b.gguf
-wget -c 'https://huggingface.co/lmstudio-ai/gemma-2b-it-GGUF/resolve/main/gemma-2b-it-q8_0.gguf?download=true' -O models/gemma-2b-it.gguf
+wget -c 'https://huggingface.co/mlabonne/gemma-2b-it-GGUF/resolve/main/gemma-2b-it.Q8_0.gguf?download=true' -O models/gemma-2b-it.gguf
 wget -c 'https://huggingface.co/MaziyarPanahi/Meta-Llama-3-70B-Instruct-GGUF/resolve/main/Meta-Llama-3-70B-Instruct.Q8_0-00001-of-00002.gguf?download=true' -O models/llama-3-70b-1.gguf
 wget -c 'https://huggingface.co/MaziyarPanahi/Meta-Llama-3-70B-Instruct-GGUF/resolve/main/Meta-Llama-3-70B-Instruct.Q8_0-00002-of-00002.gguf?download=true' -O models/llama-3-70b-2.gguf
 ```
