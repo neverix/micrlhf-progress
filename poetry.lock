@@ -833,13 +833,13 @@ typing-extensions = ">=4.5.0"
 
 [[package]]
 name = "etils"
-version = "1.7.0"
+version = "1.9.2"
 description = "Collection of common python utils"
 optional = false
-python-versions = ">=3.10"
+python-versions = ">=3.11"
 files = [
-    {file = "etils-1.7.0-py3-none-any.whl", hash = "sha256:61af8f7c242171de15e22e5da02d527cb9e677d11f8bcafe18fcc3548eee3e60"},
-    {file = "etils-1.7.0.tar.gz", hash = "sha256:97b68fd25e185683215286ef3a54e38199b6245f5fe8be6bedc1189be4256350"},
+    {file = "etils-1.9.2-py3-none-any.whl", hash = "sha256:ecd79de1fbfea9b0d6924756cfa922b05ed3360c45cf2170767da4bee0001d20"},
+    {file = "etils-1.9.2.tar.gz", hash = "sha256:15dcd35ac0c0cc2404b46ac0846af3cc4e876fd3d80f36f57951e27e8b9d6379"},
 ]
 
 [package.dependencies]
@@ -851,7 +851,7 @@ zipp = {version = "*", optional = true, markers = "extra == \"epath\""}
 [package.extras]
 all = ["etils[array-types]", "etils[eapp]", "etils[ecolab]", "etils[edc]", "etils[enp]", "etils[epath-gcs]", "etils[epath-s3]", "etils[epath]", "etils[epy]", "etils[etqdm]", "etils[etree-dm]", "etils[etree-jax]", "etils[etree-tf]", "etils[etree]"]
 array-types = ["etils[enp]"]
-dev = ["chex", "dataclass_array", "optree", "pyink", "pylint (>=2.6.0)", "pytest", "pytest-subtests", "pytest-xdist", "torch"]
+dev = ["chex", "dataclass_array", "optree", "pydantic", "pyink", "pylint (>=2.6.0)", "pytest", "pytest-subtests", "pytest-xdist", "torch"]
 docs = ["etils[all,dev]", "sphinx-apitree[ext]"]
 eapp = ["absl-py", "etils[epy]", "simple_parsing"]
 ecolab = ["etils[enp]", "etils[epy]", "etils[etree]", "jupyter", "mediapy", "numpy", "packaging", "protobuf"]
@@ -5261,5 +5261,5 @@ test = ["big-O", "importlib-resources", "jaraco.functools", "jaraco.itertools", 
 
 [metadata]
 lock-version = "2.0"
-python-versions = ">3.11.0rc1,!=3.11.0rc1,<4"
-content-hash = "33ca7bfb07efc0e8009244fdf904452d18cdfae81f00f4107ddde5d47660324d"
+python-versions = "^3.11"
+content-hash = "fe4f15216ab8cbb1163476cb827d2e5e61082df9312613cad9ee28196587d9f5"

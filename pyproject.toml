@@ -9,7 +9,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">3.11.0rc1,!=3.11.0rc1,<4"
+python = "^3.11"
 sentencepiece = "^0.2.0"
 penzai = "^0.1.0"
 jax = {version = "^0.4.26", extras = ["tpu"]}
