@@ -67,6 +67,7 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
            use_jit: bool = True,
            cache_kwargs: Optional[OrderedDict] = None,
            cfg_strength: float = 1.0,
+           only_cache: bool = False,
            ):
     if getattr(tokenizer, "pad_token_id", None) is not None:
         pad_token_id = tokenizer.pad_token_id
@@ -100,6 +101,8 @@ def sample(llama: Union[LlamaTransformer, Tuple[LlamaKVCachingTransformer, Llama
         llama_base = llama_cached
     if return_model:
         cache_base = cache
+    if only_cache:
+        return None, (llama_base, cache_base)
 
     # prefill
     base_inputs = llama_cached.inputs.from_basic_subsegments(tokens, cache)

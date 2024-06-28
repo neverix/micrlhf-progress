@@ -41,6 +41,11 @@ class ActivationReplacement(pz.Layer):
         return pz.nx.nmap(lambda a, b: a.at[self.position].set(b.astype(a.dtype)))(
             x.untag("seq"), self.replacement).tag("seq")
 
+    @classmethod
+    def replace_vector(cls, self, replacement):
+        replacement = wrap_vector(replacement)
+        return cls(replacement, self.position)
+
 
 @pz.pytree_dataclass
 class ActivationAddition(pz.Layer):
