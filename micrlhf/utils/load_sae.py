@@ -23,11 +23,23 @@ def get_sae(layer=20, revision=5, idx=0, model_dir="models", return_fname=False)
     sae_cache[key] = sae_weights
     return sae_weights
 
+def get_jb_it_sae():
+    key = "gemma_2b_jb_it_16k"
+    if key not in sae_cache:
+        os.makedirs("models/sae", exist_ok=True)
+        fname = "models/sae/gemma_2b_it_blocks.12.hook_resid_post_16384.safetensors"
+        os.system(f"wget -c 'https://huggingface.co/jbloom/Gemma-2b-IT-Residual-Stream-SAEs/resolve/main/gemma_2b_it_blocks.12.hook_resid_post_16384/sae_weights.safetensors?download=true' -O '{fname}'")
+        sae_weights = load_file(fname)
+        sae_cache[key] = sae_weights
+    return sae_cache[key]
+
 def sae_encode(sae, vector):
     if "s_gate" in sae:
         return sae_encode_gated(sae, vector)
     pre_relu = vector @ sae["W_enc"] + sae["b_enc"]
-    post_relu = jax.nn.relu(pre_relu) * sae["scaling_factor"]
+    post_relu = jax.nn.relu(pre_relu)
+    if "scaling_factor" in sae:
+        post_relu = post_relu * sae["scaling_factor"]
     decoded = post_relu @ sae["W_dec"] + sae["b_dec"]
     return pre_relu, post_relu, decoded
 
