@@ -43,6 +43,16 @@ def get_nev_it_sae():
         sae_cache[key] = sae_weights
     return sae_cache[key]
 
+def get_nev_sae():
+    key = "gemma_2b_nev_16k"
+    if key not in sae_cache:
+        os.makedirs("models/sae", exist_ok=True)
+        fname = "models/sae/gemma_2b_nev_v0.safetensors"
+        os.system(f"wget -c 'https://huggingface.co/nev/gemma-2b-saex-test/resolve/main/l12-test-run-5-3.00E-05/sae_weights.safetensors?download=true' -O '{fname}'")
+        sae_weights = load_file(fname)
+        sae_cache[key] = sae_weights
+    return sae_cache[key]
+
 def sae_encode(sae, vector):
     if "s_gate" in sae:
         return sae_encode_gated(sae, vector)
