@@ -161,7 +161,7 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
             ),
             out_shape=jax.ShapeDtypeStruct((inputs.shape[0], per_mp_output_size), inputs.dtype),
             compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "arbitrary"))),
-            interpret=True
+            interpret=False
         )(inputs, *tensors)
         if in_axis is not None:
             outputs = jax.lax.psum(outputs, axis_name=in_axis)

@@ -40,14 +40,12 @@ def scale_by_adam_8bit(
     b1: float = 0.9,
     b2: float = 0.99,
     eps: float = 1e-8,
-    block_size: int = 128,
-    # block_size: int = 1,
+    block_size: int = 2,
     dtq: bool = True,
     dtype: jax.typing.DTypeLike = jnp.float32,
 ):
     # TODO
-    # try dtq
-    # adagrad
+    # special treatment for adagrad
     # atan2 adam
     # kernel for update
 
@@ -142,7 +140,7 @@ if __name__ == "__main__":
     y = x @ w
     w_ = jax.random.normal(w_key_, (k, k))
     # optimizer = chain(scale_by_adam(b1=0.0, b2=0.99), scale_by_learning_rate(5e-3))
-    optimizer = chain(scale_by_adam_8bit(b1=0.0, b2=0.99), scale_by_learning_rate(5e-3))
+    optimizer = chain(scale_by_adam_8bit(b1=0.9, b2=0.99), scale_by_learning_rate(5e-3))
     opt_state = optimizer.init(w_)
     
     def update(opt_state, w_):
