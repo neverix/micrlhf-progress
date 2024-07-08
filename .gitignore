@@ -9,6 +9,7 @@ nohup.out
 .env
 post_loader.py
 *.jsonl
+figures/
 
 # Python gitignore
 
