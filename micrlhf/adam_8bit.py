@@ -40,7 +40,7 @@ def scale_by_adam_8bit(
     b1: float = 0.9,
     b2: float = 0.99,
     eps: float = 1e-8,
-    block_size: int = 2,
+    block_size: int = 8,
     dtq: bool = True,
     dtype: jax.typing.DTypeLike = jnp.float32,
 ):
@@ -58,6 +58,7 @@ def scale_by_adam_8bit(
     dequant_array_unsigned = jnp.asarray(quant_table_unsigned, dtype=dtype)
     quant_search_signed, quant_index_signed = sort_find_indices(quant_table_signed)
     quant_search_unsigned, quant_index_unsigned = sort_find_indices(quant_table_unsigned)
+    adagrad_mode = b1 == 0.0
 
     def quant_array(value, signed=True):
         quanted = jnp.searchsorted(quant_search_signed if signed else quant_search_unsigned, value)
@@ -77,7 +78,7 @@ def scale_by_adam_8bit(
         return quants, scales
     def unflatten(shapedef, value):
         unflats = [x.reshape(s) for x, s in zip(value, shapedef[1])]
-        return jax.tree_unflatten(shapedef[0], unflats)
+        return jax.tree.unflatten(shapedef[0], unflats)
     def dequantize(quantized, signed=True):
         return [dequant_array(quants, signed=signed) * scales for quants, scales in zip(*quantized)]
 
@@ -91,21 +92,31 @@ def scale_by_adam_8bit(
             flattened = np.prod(shape)
             shape_quant = (flattened // block_size, block_size)
             shape_scale = (flattened // block_size, 1)
-            momentum_quants.append(np.full(shape_quant, init_mom, dtype=np.uint8))
-            momentum_scales.append(np.ones(shape_scale, dtype=dtype))
+            if not adagrad_mode:
+                momentum_quants.append(np.full(shape_quant, init_mom, dtype=np.uint8))
+                momentum_scales.append(np.ones(shape_scale, dtype=dtype))
             norm_quants.append(np.full(shape_quant, init_scale, dtype=np.uint8))
             norm_scales.append(np.ones(shape_scale, dtype=dtype))
         return (momentum_quants, momentum_scales), (norm_quants, norm_scales), jnp.array(0, dtype=jnp.uint32)
     def update(grad, state, params=None):
         shapedef, grad = flatten(grad)
         momentum, norm, count = state
-        momentum = dequantize(momentum, signed=True)
         norm = dequantize(norm, signed=False)
-        momentum = jax.tree.map(lambda g, m: b1 * m + (1 - b1) * g, grad, momentum)
+        if not adagrad_mode:
+            momentum = dequantize(momentum, signed=True)
+            momentum = jax.tree.map(lambda g, m: b1 * m + (1 - b1) * g, grad, momentum)
         norm = jax.tree.map(lambda g, n: b2 * n + (1 - b2) * g ** 2, grad, norm)
         count = count + 1
-        update = jax.tree.map(lambda m, n: (m / (1 - b1 ** count)) / (jnp.sqrt(n / (1 - b2 ** count)) + eps), momentum, norm)
-        return unflatten(shapedef, update), (quantize(momentum), quantize(norm), count)
+        update = jax.tree.map(lambda m, n: (m / ((1 - b1 ** count) if not adagrad_mode else 1)) / (jnp.sqrt(n / (1 - b2 ** count)) + eps), momentum if not adagrad_mode else grad, norm)
+        return unflatten(shapedef, update), (quantize(momentum), quantize(norm, signed=False), count)
+    return GradientTransformation(init, update)
+
+
+def transpose():
+    def init(x):
+        return
+    def update(grad, state, params=None):
+        return jax.tree.map(lambda g: jnp.swapaxes(g, -1, -2), grad), state
     return GradientTransformation(init, update)
 
 
@@ -131,32 +142,34 @@ if __name__ == "__main__":
     plt.hist(dtq_unsigned, bins=b, alpha=0.25, label="DTQ Unsigned")
     plt.legend()
     plt.savefig("figures/scratch/quant_table.png")
+    plt.clf()
     
-    k = 2048
-    key = jax.random.PRNGKey(0)
-    w_key, x_key, w_key_ = jax.random.split(key, 3)
-    w = jax.random.normal(w_key, (k, k)) / (k ** 0.5)
-    x = jax.random.normal(x_key, (k, k))
-    y = x @ w
-    w_ = jax.random.normal(w_key_, (k, k))
-    # optimizer = chain(scale_by_adam(b1=0.0, b2=0.99), scale_by_learning_rate(5e-3))
-    optimizer = chain(scale_by_adam_8bit(b1=0.9, b2=0.99), scale_by_learning_rate(5e-3))
-    opt_state = optimizer.init(w_)
-    
-    def update(opt_state, w_):
-        loss, grad = jax.value_and_grad(lambda w, x, y: jnp.mean((x @ w - y) ** 2))(w_, x, y)
-        w_, opt_state = optimizer.update(grad, opt_state, w_)
-        return loss, w_, opt_state
-    update = jax.jit(update, donate_argnums=(0, 1))
-    
-    losses = []
-    for _ in (bar := trange(4096)):
-        loss, w_, opt_state = update(opt_state, w_)
-        losses.append(loss)
-        bar.set_postfix(loss=loss)
+    k = 512
+    n_iter = 512
+    for optimizer, fn in ((chain(scale_by_adam_8bit(b1=0.9, b2=0.99), scale_by_learning_rate(5e-3)), "8bit"), (chain(scale_by_adam(b1=0.9, b2=0.99), scale_by_learning_rate(5e-3)), "basic")):
+        key = jax.random.PRNGKey(0)
+        w_key, x_key, w_key_ = jax.random.split(key, 3)
+        w = jax.random.normal(w_key, (k, k)) / (k ** 0.5)
+        x = jax.random.normal(x_key, (k, k))
+        y = x @ w
+        w_ = jax.random.normal(w_key_, (k, k))
+        opt_state = optimizer.init(w_)
+        
+        def update(opt_state, w_):
+            loss, grad = jax.value_and_grad(lambda w, x, y: jnp.mean((x @ w - y) ** 2))(w_, x, y)
+            w_, opt_state = optimizer.update(grad, opt_state, w_)
+            return loss, w_, opt_state
+        update = jax.jit(update, donate_argnums=(0, 1))
+        
+        losses = []
+        for _ in (bar := trange(n_iter)):
+            loss, w_, opt_state = update(opt_state, w_)
+            losses.append(loss)
+            bar.set_postfix(loss=loss)
 
-    plt.plot(losses)
+        plt.plot(losses, label=fn)
     plt.xscale("log")
     plt.yscale("log")
     plt.ylim(1e-1, 1)
+    plt.legend()
     plt.savefig("figures/scratch/optim.png")
