@@ -89,7 +89,7 @@ def scale_by_adam_8bit(
         init_mom = quant_array(0.0, signed=True)
         init_scale = quant_array(0.0, signed=False)
         for shape in shapes:
-            flattened = np.prod(shape)
+            flattened = np.prod(shape) if shape else 1
             bs = block_size if flattened >= block_size and len(shape) > 1 else 1
             shape_quant = (flattened // bs, bs)
             shape_scale = (flattened // bs, 1)
@@ -153,7 +153,7 @@ if __name__ == "__main__":
         w = jax.random.normal(w_key, (k, k)) / (k ** 0.5)
         x = jax.random.normal(x_key, (k, k))
         y = x @ w
-        b = jax.random.normal(w_key, (1,))
+        b = jax.random.normal(w_key, ())
         w_ = jax.random.normal(w_key_, (k, k))
         p = [w_, b]
         opt_state = optimizer.init(p)
