@@ -90,8 +90,9 @@ def scale_by_adam_8bit(
         init_scale = quant_array(0.0, signed=False)
         for shape in shapes:
             flattened = np.prod(shape)
-            shape_quant = (flattened // block_size, block_size)
-            shape_scale = (flattened // block_size, 1)
+            bs = block_size if flattened >= block_size and len(shape) > 1 else 1
+            shape_quant = (flattened // bs, bs)
+            shape_scale = (flattened // bs, 1)
             if not adagrad_mode:
                 momentum_quants.append(np.full(shape_quant, init_mom, dtype=np.uint8))
                 momentum_scales.append(np.ones(shape_scale, dtype=dtype))
@@ -152,18 +153,20 @@ if __name__ == "__main__":
         w = jax.random.normal(w_key, (k, k)) / (k ** 0.5)
         x = jax.random.normal(x_key, (k, k))
         y = x @ w
+        b = jax.random.normal(w_key, (1,))
         w_ = jax.random.normal(w_key_, (k, k))
-        opt_state = optimizer.init(w_)
+        p = [w_, b]
+        opt_state = optimizer.init(p)
         
-        def update(opt_state, w_):
-            loss, grad = jax.value_and_grad(lambda w, x, y: jnp.mean((x @ w - y) ** 2))(w_, x, y)
-            w_, opt_state = optimizer.update(grad, opt_state, w_)
-            return loss, w_, opt_state
+        def update(opt_state, p):
+            loss, grad = jax.value_and_grad(lambda p, x, y: jnp.mean((x @ p[0] + p[1] - y) ** 2))(p, x, y)
+            p, opt_state = optimizer.update(grad, opt_state, p)
+            return loss, p, opt_state
         update = jax.jit(update, donate_argnums=(0, 1))
         
         losses = []
         for _ in (bar := trange(n_iter)):
-            loss, w_, opt_state = update(opt_state, w_)
+            loss, p, opt_state = update(opt_state, p)
             losses.append(loss)
             bar.set_postfix(loss=loss)
 
