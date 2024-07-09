@@ -40,7 +40,7 @@ def scale_by_adam_8bit(
     b1: float = 0.9,
     b2: float = 0.99,
     eps: float = 1e-8,
-    block_size: int = 8,
+    block_size: int = 32,
     dtq: bool = True,
     dtype: jax.typing.DTypeLike = jnp.float32,
 ):
@@ -70,7 +70,7 @@ def scale_by_adam_8bit(
 
     def flatten(value):
         leaves, treedef = jax.tree.flatten(value, is_leaf=eqx.is_array)
-        shapes, flats = [x.shape for x in leaves], [x.reshape(-1, block_size) for x in leaves]
+        shapes, flats = [x.shape for x in leaves], [x.reshape(-1, block_size if x.size >= block_size and len(x.shape) > 1 else 1) for x in leaves]
         return (treedef, shapes), flats
     def quantize(flats, signed=True):
         scales = [jnp.abs(x).max(-1, keepdims=True) for x in flats]
@@ -97,7 +97,7 @@ def scale_by_adam_8bit(
                 momentum_scales.append(np.ones(shape_scale, dtype=dtype))
             norm_quants.append(np.full(shape_quant, init_scale, dtype=np.uint8))
             norm_scales.append(np.ones(shape_scale, dtype=dtype))
-        return (momentum_quants, momentum_scales), (norm_quants, norm_scales), jnp.array(0, dtype=jnp.uint32)
+        return (None if adagrad_mode else (momentum_quants, momentum_scales)), (norm_quants, norm_scales), jnp.array(0, dtype=jnp.uint32)
     def update(grad, state, params=None):
         shapedef, grad = flatten(grad)
         momentum, norm, count = state
@@ -108,7 +108,7 @@ def scale_by_adam_8bit(
         norm = jax.tree.map(lambda g, n: b2 * n + (1 - b2) * g ** 2, grad, norm)
         count = count + 1
         update = jax.tree.map(lambda m, n: (m / ((1 - b1 ** count) if not adagrad_mode else 1)) / (jnp.sqrt(n / (1 - b2 ** count)) + eps), momentum if not adagrad_mode else grad, norm)
-        return unflatten(shapedef, update), (quantize(momentum), quantize(norm, signed=False), count)
+        return unflatten(shapedef, update), (None if adagrad_mode else quantize(momentum), quantize(norm, signed=False), count)
     return GradientTransformation(init, update)
 
 
@@ -146,7 +146,7 @@ if __name__ == "__main__":
     
     k = 512
     n_iter = 512
-    for optimizer, fn in ((chain(scale_by_adam_8bit(b1=0.9, b2=0.99), scale_by_learning_rate(5e-3)), "8bit"), (chain(scale_by_adam(b1=0.9, b2=0.99), scale_by_learning_rate(5e-3)), "basic")):
+    for optimizer, fn in ((chain(scale_by_adam_8bit(b1=0.0, b2=0.99), scale_by_learning_rate(5e-3)), "8bit"), (chain(scale_by_adam(b1=0.0, b2=0.99), scale_by_learning_rate(5e-3)), "basic")):
         key = jax.random.PRNGKey(0)
         w_key, x_key, w_key_ = jax.random.split(key, 3)
         w = jax.random.normal(w_key, (k, k)) / (k ** 0.5)
