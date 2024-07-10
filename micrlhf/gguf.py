@@ -105,6 +105,28 @@ class GGUFReader(object):
             scales = np.frombuffer(data, dtype=np.float16).reshape(-1, 1 + GGUF_BLOCK_STRIDES["Q8_0"] // 2)[:, :1]
             qs = np.frombuffer(data, dtype=np.int8).reshape(-1, 2 + GGUF_BLOCK_STRIDES["Q8_0"])[:, 2:]
             return "q8_0", (scales, qs), tensor["shape"]
+        elif tensor["ggml_type"] == "Q4_K":
+            # https://github.com/99991/pygguf/blob/829886d0726c89c6f6c0d8c39b0d507ec1604077/gguf.py#L206
+            data_f16 = np.frombuffer(data, dtype=np.float16).reshape(-1, GGUF_BLOCK_SIZES["Q4_K"] // 2)
+            data_u8 = np.frombuffer(data, dtype=np.uint8).reshape(-1, GGUF_BLOCK_SIZES["Q4_K"])
+            
+            scale_factors = data_f16[:, 0].reshape(-1, 1)
+            scale_offsets = data_f16[:, 1].reshape(-1, 1)
+            qs1 = data_u8[:, 4:16].reshape(-1, 12)
+            qs2 = data_u8[:, 16:].reshape(-1, 128)
+
+            return "q4_k", (scale_factors, scale_offsets, qs1, qs2), tensor["shape"]
+        elif tensor["ggml_type"] == "Q6_K":
+            # https://github.com/99991/pygguf/blob/829886d0726c89c6f6c0d8c39b0d507ec1604077/gguf.py#L288
+            data_f16 = np.frombuffer(data, dtype=np.float16).reshape(-1, GGUF_BLOCK_SIZES["Q6_K"] // 2)
+            data_u8 = np.frombuffer(data, dtype=np.uint8).reshape(-1, GGUF_BLOCK_SIZES["Q6_K"])
+            data_i8 = np.frombuffer(data, dtype=np.int8).reshape(-1, GGUF_BLOCK_SIZES["Q6_K"])
+            
+            scales = data_f16[:, -1].reshape(-1, 1)
+            ql = data_u8[:, :128].reshape(-1, 128).astype(np.int16)
+            qh = data_u8[:, 128:192].reshape(-1, 64).astype(np.int16)
+            sc = data_i8[:, 192:208].reshape(-1, 16).astype(np.float32)
+            return "q6_k", (scales, ql, qh, sc), tensor["shape"]
         else:
             raise NotImplementedError(f"GGML type {tensor['ggml_type']} not implemented (yet)")
 

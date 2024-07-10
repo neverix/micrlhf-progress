@@ -161,7 +161,7 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
             ),
             out_shape=jax.ShapeDtypeStruct((inputs.shape[0], per_mp_output_size), inputs.dtype),
             compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "arbitrary"))),
-            interpret=True
+            interpret=False
         )(inputs, *tensors)
         if in_axis is not None:
             outputs = jax.lax.psum(outputs, axis_name=in_axis)
@@ -276,6 +276,68 @@ def make_param(uninitialized_param: pz.nn.UninitializedParameter,
         dequantized = tensor_data[0]
     elif quant_type == "q8_0":
         dequantized = tensor_data[0].astype(dtype) * tensor_data[1]
+    elif quant_type == "q4_k":
+        scale_factors, scale_offsets, qs1, qs2 = tensor_data
+
+        num_blocks = scale_factors.shape[0]
+        assert num_blocks == scale_offsets.shape[0] == qs1.shape[0] == qs2.shape[0]
+
+        scale_factors = scale_factors.reshape(num_blocks, 1, 1, -1)
+        scale_offsets = scale_offsets.reshape(num_blocks, 1, 1, -1)
+        qs1 = qs1.reshape(num_blocks, 12, 1, -1)
+        qs2 = qs2.reshape(num_blocks, 4, 32, -1)
+
+        factors = scale_factors * jnp.concatenate([qs1[:, 0:4] & 0b111111, (qs1[:, 8:] & 15) | ((qs1[:, 0:4] >> 6) << 4)], axis=1)
+        offsets = scale_offsets * jnp.concatenate([qs1[:, 4:8] & 0b111111, (qs1[:, 8:] >> 4) | ((qs1[:, 4:8] >> 6) << 4)], axis=1)
+        
+        qs2 = jnp.stack([qs2 & 0xf, qs2 >> 4], axis=2).reshape(num_blocks, 8, 32, -1)
+
+        dequantized = factors * qs2 - offsets
+    elif quant_type == "q6_k":
+        scales, ql, qh, sc = tensor_data
+        
+        scales = scales.reshape(*scales.shape, -1)
+        ql = ql.reshape(*ql.shape, -1)
+        qh = qh.reshape(*qh.shape, -1)
+        sc = sc.reshape(*sc.shape, -1)
+        
+        num_blocks = scales.shape[0]
+        assert num_blocks == ql.shape[0] == qh.shape[0] == sc.shape[0]
+
+        # scales: nb, 1, x (float32)
+        # ql: nb, 128, x (int16)
+        # qh: nb, 64, x (int16)
+        # sc: nb, 16, x (float32)
+        
+        sc = sc.reshape(num_blocks, 16, 1, -1)
+
+        q1 = (ql[:,   :32 ] & 0xF) | (((qh[:, :32] >> 0) & 3) << 4) - 32
+        q2 = (ql[:, 32:64 ] & 0xF) | (((qh[:, :32] >> 2) & 3) << 4) - 32
+        q3 = (ql[:,   :32 ] >>  4) | (((qh[:, :32] >> 4) & 3) << 4) - 32
+        q4 = (ql[:, 32:64 ] >>  4) | (((qh[:, :32] >> 6) & 3) << 4) - 32
+        q5 = (ql[:, 64:96 ] & 0xF) | (((qh[:, 32:] >> 0) & 3) << 4) - 32
+        q6 = (ql[:, 96:128] & 0xF) | (((qh[:, 32:] >> 2) & 3) << 4) - 32
+        q7 = (ql[:, 64:96 ] >>  4) | (((qh[:, 32:] >> 4) & 3) << 4) - 32
+        q8 = (ql[:, 96:128] >>  4) | (((qh[:, 32:] >> 6) & 3) << 4) - 32
+
+        dequantized = scales * np.concatenate([
+            sc[:,  0] * q1[:, :16],
+            sc[:,  1] * q1[:, 16:],
+            sc[:,  2] * q2[:, :16],
+            sc[:,  3] * q2[:, 16:],
+            sc[:,  4] * q3[:, :16],
+            sc[:,  5] * q3[:, 16:],
+            sc[:,  6] * q4[:, :16],
+            sc[:,  7] * q4[:, 16:],
+            sc[:,  8] * q5[:, :16],
+            sc[:,  9] * q5[:, 16:],
+            sc[:, 10] * q6[:, :16],
+            sc[:, 11] * q6[:, 16:],
+            sc[:, 12] * q7[:, :16],
+            sc[:, 13] * q7[:, 16:],
+            sc[:, 14] * q8[:, :16],
+            sc[:, 15] * q8[:, 16:],
+        ], axis=1)
     else:
         raise NotImplementedError(f"Quantization type {quant_type} not implemented")
 
