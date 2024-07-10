@@ -134,16 +134,25 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         qs2 = pl.load(qs2_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
         scale_factors = pl.load(scale_factors_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
         scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
+        
+        num_blocks = qs2.shape[0]
+        scale_factors = scale_factors.reshape(num_blocks, 1, 1, -1)
+        scale_offsets = scale_offsets.reshape(num_blocks, 1, 1, -1)
+        qs1 = qs1.reshape(num_blocks, 12, 1, -1)
+        qs2 = qs2.reshape(num_blocks, 4, 32, -1)
+        
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
         
         factors = scale_factors * jnp.concatenate([qs1[:, 0:4] & 0b111111, (qs1[:, 8:] & 15) | ((qs1[:, 0:4] >> 6) << 4)], axis=1)
         offsets = scale_offsets * jnp.concatenate([qs1[:, 4:8] & 0b111111, (qs1[:, 8:] >> 4) | ((qs1[:, 4:8] >> 6) << 4)], axis=1)
         
-        qs2 = jnp.stack([qs2 & 0xf, qs2 >> 4], axis=2).reshape(block_k, 8, 32, -1)
-        
-        matrix = factors * qs2 - offsets
+        qs2 = jnp.stack([qs2 & 0xf, qs2 >> 4], axis=2).reshape(num_blocks, 8, 32, -1)
+
+        matrix = factors * qs2
+        matrix = matrix - offsets
         matrix = matrix.reshape(block_k, block_m)
         result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), matrix.astype(jnp.bfloat16),
+                                     dimension_numbers=(((1,), (0,)), ((), ())),
                                      preferred_element_type=jnp.float32,)
 
         accum_ref[...] += result
