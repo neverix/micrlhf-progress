@@ -27,7 +27,7 @@ def sae_encode(sae, vector):
     if "s_gate" in sae:
         return sae_encode_gated(sae, vector)
     pre_relu = vector @ sae["W_enc"] + sae["b_enc"]
-    post_relu = jax.nn.relu(pre_relu) * sae["scaling_factor"]
+    post_relu = jax.nn.relu(pre_relu) * sae.get("scaling_factor", 1.0)
     decoded = post_relu @ sae["W_dec"] + sae["b_dec"]
     return pre_relu, post_relu, decoded
 
