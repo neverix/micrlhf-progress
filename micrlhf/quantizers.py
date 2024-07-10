@@ -2,7 +2,7 @@ import dataclasses
 import warnings
 from collections import OrderedDict
 from functools import partial
-from typing import Dict, Literal, Optional, Tuple
+from typing import Dict, Literal, Optional, Tuple, Callable
 
 import jax
 import jax.numpy as jnp
@@ -27,7 +27,7 @@ def make_linear(old_linear: pz.nn.Linear,
     param = old_linear.select().at_instances_of(pz.nn.UninitializedParameter).get()
     tensor_data, do_transpose = make_param(
         param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name, return_metadata=True, **kwargs)
-    if not do_transpose or quant_type == "fp32" or quant_type == "fp16":
+    if not do_transpose or quant_type == "fp32" or quant_type == "fp16" or quant_type == "q6_k":
         # fall back on dequantizing the parameter on HBM
         param = make_param(param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name)
         return old_linear.select().at_instances_of(pz.nn.Parameter).apply(lambda p: param)
@@ -48,16 +48,28 @@ def make_linear(old_linear: pz.nn.Linear,
     in_axis = find_axis(old_linear.input_axes.keys())
     out_axis = find_axis(old_linear.output_axes.keys())
     if quant_type == "q8_0":
-        return Linear8bitTranspose(
+        return LinearQuantizedTranspose(
+            params=new_data,
             in_features=old_linear.input_axes,
             out_features=old_linear.output_axes,
-            scale=new_data[0],
-            quants=new_data[1],
             dtype=param.value_structure.dtype,
             mesh=mesh,
             batch_axis="dp",
             in_axis=in_axis,
-            out_axis=out_axis
+            out_axis=out_axis,
+            kernel=matmul_8bit_kernel,
+        ).speedup_matmul()
+    elif quant_type == "q4_k":
+        return LinearQuantizedTranspose(
+            params=new_data,
+            in_features=old_linear.input_axes,
+            out_features=old_linear.output_axes,
+            dtype=param.value_structure.dtype,
+            mesh=mesh,
+            batch_axis="dp",
+            in_axis=in_axis,
+            out_axis=out_axis,
+            kernel=matmul_4bit_kernel,
         ).speedup_matmul()
     else:
         raise NotImplementedError(f"Quantization type {quant_type} not implemented")
@@ -110,6 +122,47 @@ def matmul_8bit_kernel(inputs_ref, quants_ref, scale_ref, outputs_ref, accum_ref
     jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None)
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
+# def matmul_4bit(inputs, scale_factors, scale_offsets, qs1, qs2):
+def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref, qs2_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=256):
+    block_m = qs2_ref.shape[2]
+    accum_ref[...] = jnp.zeros_like(accum_ref)
+
+    block_group = block_k // quant_group_size
+    loop_iterations = max(1, inputs_ref.shape[-1] // block_k)
+    def matmul_loop(i, _):
+        qs1 = pl.load(qs1_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
+        qs2 = pl.load(qs2_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
+        scale_factors = pl.load(scale_factors_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
+        scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
+        inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
+        
+        factors = scale_factors * jnp.concatenate([qs1[:, 0:4] & 0b111111, (qs1[:, 8:] & 15) | ((qs1[:, 0:4] >> 6) << 4)], axis=1)
+        offsets = scale_offsets * jnp.concatenate([qs1[:, 4:8] & 0b111111, (qs1[:, 8:] >> 4) | ((qs1[:, 4:8] >> 6) << 4)], axis=1)
+        
+        qs2 = jnp.stack([qs2 & 0xf, qs2 >> 4], axis=2).reshape(block_k, 8, 32, -1)
+        
+        matrix = factors * qs2 - offsets
+        matrix = matrix.reshape(block_k, block_m)
+        result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), matrix.astype(jnp.bfloat16),
+                                     preferred_element_type=jnp.float32,)
+
+        accum_ref[...] += result
+    jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None)
+    outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
+
+    # scale_factors = scale_factors.reshape(num_blocks, 1, 1, -1)
+    # scale_offsets = scale_offsets.reshape(num_blocks, 1, 1, -1)
+    # qs1 = qs1.reshape(num_blocks, 12, 1, -1)
+    # qs2 = qs2.reshape(num_blocks, 4, 32, -1)
+
+    # factors = scale_factors * jnp.concatenate([qs1[:, 0:4] & 0b111111, (qs1[:, 8:] & 15) | ((qs1[:, 0:4] >> 6) << 4)], axis=1)
+    # offsets = scale_offsets * jnp.concatenate([qs1[:, 4:8] & 0b111111, (qs1[:, 8:] >> 4) | ((qs1[:, 4:8] >> 6) << 4)], axis=1)
+    
+    # qs2 = jnp.stack([qs2 & 0xf, qs2 >> 4], axis=2).reshape(num_blocks, 8, 32, -1)
+
+    # matrix = factors * qs2 - offsets
+    # print(matrix.shape)
+    # return inputs @ matrix.reshape(inputs.shape[-1], -1)
 
 def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, out_axis=None):
     inputs = inputs.astype(jnp.bfloat16)
@@ -187,9 +240,9 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
 
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
-class Linear8bitTranspose(QuantizedLinear):
-    scale: pz.nx.NamedArray
-    quants: pz.nx.NamedArray
+class LinearQuantizedTranspose(QuantizedLinear):
+    kernel: Callable = dataclasses.field(metadata={"pytree_node": False})
+    params: Tuple[pz.nx.NamedArray]
     dtype: jax.typing.DTypeLike = dataclasses.field(metadata={"pytree_node": False})
     mesh: jshard.Mesh = dataclasses.field(metadata={"pytree_node": False})
     batch_axis: str = dataclasses.field(metadata={"pytree_node": False})
@@ -204,35 +257,30 @@ class Linear8bitTranspose(QuantizedLinear):
     @property
     @jax.jit
     def sped_up_params(self):
-        scale, quants = self.scale, self.quants
         if self.sped_up:
-            return scale, quants
+            return self.params
         _, ia, oa = self.axes
-        scale, quants = (
+        params = self.params
+        params = tuple(
             pz.nx.wrap(pz.nx.nmap(jnp.ravel)(
                 pz.nx.nmap(jnp.ravel)(tensor.untag(*self.in_features.keys())).tag("in_features")
             .untag(*self.out_features.keys())).tag("out_features")
             .unwrap("in_features", "quant_group", "out_features"),
             ia, "quant_group", oa)
-            for tensor in (scale, quants)
+            for tensor in params
         )
-        return scale, quants
+        return params
 
     def speedup_matmul(self):
-        scale, quants = self.sped_up_params
-        return dataclasses.replace(self, scale=scale, quants=quants, sped_up=True)
+        return dataclasses.replace(self, params=self.sped_up_params, sped_up=True)
 
     def quant_linear(self, inputs: jnp.ndarray) -> jnp.ndarray:
         _, ia, oa = self.axes
-        scale, quants = self.sped_up_params
-        scale, quants = (t.unwrap(ia, "quant_group", oa) for t in (scale, quants))
+        params = self.sped_up_params
+        params = (t.unwrap(ia, "quant_group", oa) for t in params)
         mesh = self.mesh
-        return matmul_fast(inputs, quants, scale, mesh=mesh, kernel=matmul_8bit_kernel,
+        return matmul_fast(inputs, *params, mesh=mesh, kernel=self.kernel,
                            batch_axis=self.batch_axis, in_axis=self.in_axis, out_axis=self.out_axis)
-        # warnings.warn("Using slow 8-bit matmul, inputs too small")
-        # weight = scale.astype(self.dtype) * quants
-        # weight = weight.reshape(np.prod(list(self.in_features.values())), -1)
-        # return inputs @ weight
 
 
 def make_param(uninitialized_param: pz.nn.UninitializedParameter,
