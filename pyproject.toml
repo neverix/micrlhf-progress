@@ -22,6 +22,7 @@ appdirs = "^1.4.4"
 huggingface-hub = "^0.23.0"
 numba = "^0.60.0"
 scikit-learn = "^1.5.0"
+jax-tqdm = "^0.2.1"
 
 [[tool.poetry.source]]
 name = "jax-nightly"

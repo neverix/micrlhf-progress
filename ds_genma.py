@@ -9,7 +9,7 @@ llama = LlamaTransformer.from_pretrained("models/gemma-2b-it.gguf", from_type="g
 from micrlhf.sampling import sample, trange, jnp, load_tokenizer, jit_wrapper
 from transformers import AutoTokenizer
 import jax
-tokenizer = AutoTokenizer.from_pretrained("alpindale/gemma-2b")
+tokenizer = AutoTokenizer.from_pretrained("NousResearch/gemma-2b-it-tokenizer")
 prompt = "<bos><start_of_turn>user\n"
 batch_size: int = 128
 max_seq_len: int = 256
