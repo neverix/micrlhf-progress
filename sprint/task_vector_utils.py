@@ -63,7 +63,7 @@ def generate_algorithmic_tasks(seed = 0, n_examples=300, max_len=10, max_value=1
 
 
 def load_tasks():
-    subprocess.run(["git", "clone", "https://github.com/roeehendel/icl_task_vectors data/itv"])
+    # subprocess.run(["git", "clone", "https://github.com/roeehendel/icl_task_vectors data/itv"])
     tasks = {}
     for g in glob.glob("data/itv/data/**/*.json"):
         tasks[os.path.basename(g).partition(".")[0]] = json.load(open(g))
@@ -296,12 +296,15 @@ def make_get_resids(llama, layer_target):
 
 class FeatureSearch:
     def __init__(self, task, pairs, target_layer, llama, tokenizer, batch_size=32, n_shot=20, early_stopping_steps=50, 
-                 max_seq_len=256, iterations=2000, seed=9, l1_coeff=2e-2, lr=1e-2, 
-                 init_w=0.5, sae_v=4, n_first=3, picked_features=None):
+                 max_seq_len=256, iterations=2000, seed=9, l1_coeff=2e-2, lr=1e-2, sep=1599, pad_token=32000,
+                 init_w=0.5, sae_v=4, n_first=3, picked_features=None, sae=None):
         self.task = task
         self.target_layer = target_layer
         self.sae_v = sae_v
-        self.sae = get_sae(target_layer, sae_v)
+        if sae is None:
+            self.sae = get_sae(target_layer, sae_v)
+        else:
+            self.sae = sae
         self.seed = seed
         self.early_stopping_steps = early_stopping_steps
         self.iterations = iterations
@@ -314,6 +317,8 @@ class FeatureSearch:
         self.picked_features = picked_features
         self.llama = llama
         self.tokenizer = tokenizer
+        self.sep = sep
+        self.pad_token = pad_token
 
         self.runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed)
         
@@ -349,14 +354,14 @@ class FeatureSearch:
     
     def get_loss(self, weights):
         if "s_gate" in self.sae:
-            weights = (weights > 0) * jax.nn.relu(weights * jax.nn.softplus(self.sae["s_gate"]) * self.sae["scaling_factor"] + self.sae["b_gate"])   
+            weights = (weights > 0) * jax.nn.relu(weights * jax.nn.softplus(self.sae["s_gate"]) * self.sae.get("scaling_factor", 1.0) + self.sae["b_gate"])   
         else:
             weights = jax.nn.relu(weights)
 
         recon = jnp.einsum("fv,f->v", self.sae["W_dec"], weights)
         recon = recon.astype('bfloat16')
 
-        mask = self.eval_tokens == 1599
+        mask = self.eval_tokens == self.sep
         positions = jnp.argwhere(mask)[:, -1]
         resids = self.initial_resids.unwrap("batch", "seq", "embedding")
 
@@ -368,7 +373,7 @@ class FeatureSearch:
 
         inputs = dataclasses.replace(self.eval_inputs, tokens=modified)
         logits = self.taker(inputs).unwrap("batch", "seq", "vocabulary")
-        loss = logprob_loss(logits, self.eval_tokens, n_first=self.n_first)
+        loss = logprob_loss(logits, self.eval_tokens, n_first=self.n_first, sep=self.sep, pad_token=self.pad_token)
 
         # self.l1_coeff *= 1.002
 
@@ -426,12 +431,12 @@ class FeatureSearch:
         steering_vector =  steering_vector.astype('bfloat16')
 
         act_add = make_act_adder(
-            self.llama, steering_vector, self.eval_tokens, self.target_layer
+            self.llama, steering_vector, self.eval_tokens, self.target_layer, sep=self.sep
         )
 
         logits = act_add(self.eval_inputs).unwrap("batch", "seq", "vocabulary")
 
-        return logprob_loss(logits, self.eval_tokens, n_first=self.n_first)
+        return logprob_loss(logits, self.eval_tokens, n_first=self.n_first, sep=self.sep, pad_token=self.pad_token)
 
     def check_features(self, features, scale):
         losses = jnp.hstack([self.check_feature(feature, scale) for feature in tqdm(features)])

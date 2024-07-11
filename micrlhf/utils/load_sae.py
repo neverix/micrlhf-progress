@@ -43,6 +43,22 @@ def get_nev_it_sae():
         sae_cache[key] = sae_weights
     return sae_cache[key]
 
+def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=0, model_dir="models"):
+    key = f"gemma_2b_nev_it_{label}_{layer}"
+    if key in sae_cache:
+        return sae_cache[key]
+    fs = HfFileSystem()
+    weights = fs.glob(f"nev/gemma-2b-saex-test/it-l{layer}-{label}-test-run-{revision}-*/*.safetensors")
+    weight = sorted(weights)[idx]
+    sparsity = float("-".join(weight.split("/")[2].split("-")[6:]))
+    os.makedirs("models/sae", exist_ok=True)
+    fname = f"{model_dir}/sae/it-{layer}-{label}-{revision}-{sparsity}.safetensors"
+    w = "/".join(weight.split("/")[2:])
+    os.system(f'wget -c "https://huggingface.co/nev/gemma-2b-saex-test/resolve/main/{w}?download=true" -O "{fname}"')
+    sae_weights = load_file(fname)
+    sae_cache[key] = sae_weights
+    return sae_weights
+
 def get_nev_sae():
     key = "gemma_2b_nev_16k"
     if key not in sae_cache:

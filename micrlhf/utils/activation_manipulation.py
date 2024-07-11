@@ -79,7 +79,7 @@ class ActivationAddition(pz.Layer):
             
         return pz.nx.nmap(lambda a, b: jax.lax.select(
             self.size_cond == "all" or len(a) > 1, self.adder(a, b).astype(a), a))(
-            x.untag("seq"), self.addition).tag("seq")
+            x.untag("seq"), self.addition if "seq" not in self.addition.named_shape else self.addition.untag("seq")).tag("seq")
 
 
 @pz.pytree_dataclass
