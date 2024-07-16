@@ -12,7 +12,7 @@ packages = [
 python = "^3.10"
 sentencepiece = "^0.2.0"
 penzai = "^0.1.0"
-jax = {version = "^0.4.26", extras = ["tpu"]}
+jax = {version = "^0.4.31.dev20240710", extras = ["tpu"]}
 tiktoken = "^0.6.0"
 tqdm = "^4.66.2"
 datasets = "^2.19.1"
@@ -22,6 +22,12 @@ appdirs = "^1.4.4"
 huggingface-hub = "^0.23.0"
 numba = "^0.60.0"
 scikit-learn = "^1.5.0"
+jax-tqdm = "^0.2.1"
+
+[[tool.poetry.source]]
+name = "jax-nightly"
+url = "https://storage.googleapis.com/jax-releases/jax_nightly_releases.html"
+priority = "supplemental"
 
 [[tool.poetry.source]]
 name = "google-libtpu"
