@@ -57,6 +57,11 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
     os.system(f'wget -c "https://huggingface.co/nev/gemma-2b-saex-test/resolve/main/{w}?download=true" -O "{fname}"')
     sae_weights = load_file(fname)
     sae_cache[key] = sae_weights
+
+    if "mean_norm" in sae_weights:
+        norm_factor = (sae_weights["W_enc"].shape[0] ** 0.5) / sae_weights["mean_norm"]
+        sae_weights["norm_factor"] = norm_factor
+
     return sae_weights
 
 def get_nev_sae():
@@ -81,6 +86,10 @@ def sae_encode(sae, vector):
 
 def sae_encode_gated(sae, vector, ablate_features=None):
     inputs = vector
+
+    if "norm_factor" in sae:
+        inputs = inputs * sae["norm_factor"]
+
     pre_relu = inputs @ sae["W_enc"]
     pre_relu = pre_relu +sae["b_enc"]
     post_relu = jax.nn.relu(pre_relu)
@@ -90,6 +99,10 @@ def sae_encode_gated(sae, vector, ablate_features=None):
     if ablate_features is not None:
         post_relu = post_relu.at[ablate_features].set(0)
 
-    recon = post_relu @ sae["W_dec"] + sae["b_dec"]
+    recon = post_relu @ sae["W_dec"]
+    if "norm_factor" in sae:
+        recon = recon / sae["norm_factor"]
+
+    recon = recon + sae["b_dec"]
 
     return pre_relu, post_relu, recon
