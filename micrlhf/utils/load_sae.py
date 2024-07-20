@@ -1,8 +1,9 @@
 import os
 
 import jax
+import shutil
 from huggingface_hub import HfFileSystem
-from safetensors.flax import load_file
+from safetensors.flax import load_file, save_file
 
 sae_cache = {}
 def get_sae(layer=20, revision=5, idx=0, model_dir="models", return_fname=False):
@@ -54,7 +55,11 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
     os.makedirs("models/sae", exist_ok=True)
     fname = f"{model_dir}/sae/it-{layer}-{label}-{revision}-{sparsity}.safetensors"
     w = "/".join(weight.split("/")[2:])
-    os.system(f'wget -c "https://huggingface.co/nev/gemma-2b-saex-test/resolve/main/{w}?download=true" -O "{fname}"')
+    fname_16 = name_bf16(fname)
+    if not os.path.exists(fname_16):
+        os.system(f'wget -c "https://huggingface.co/nev/gemma-2b-saex-test/resolve/main/{w}?download=true" -O "{fname}"')
+        convert_to_bf16(fname, fname_16)
+    fname = fname_16
     sae_weights = load_file(fname)
     sae_cache[key] = sae_weights
 
@@ -106,3 +111,10 @@ def sae_encode_gated(sae, vector, ablate_features=None):
     recon = recon + sae["b_dec"]
 
     return pre_relu, post_relu, recon
+
+def name_bf16(fname):
+    return fname.replace(".safetensors", "_bf16.safetensors")
+
+def convert_to_bf16(fname, fname_out):
+    shutil.move(fname, fname_out)
+    save_file({k: v.astype("bfloat16") for k, v in load_file(fname_out).items()}, fname_out)
