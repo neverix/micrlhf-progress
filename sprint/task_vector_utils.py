@@ -14,7 +14,7 @@ from penzai import pz
 from tqdm.auto import trange, tqdm
 from micrlhf.llama import LlamaBlock
 from micrlhf.utils.activation_manipulation import add_vector
-from micrlhf.utils.load_sae import get_sae
+from micrlhf.utils.load_sae import get_sae, weights_to_resid
 from micrlhf.sampling import jit_wrapper
 
 
@@ -239,7 +239,7 @@ def get_tv(resids, tokens, sep=1599, shift=None):
 
 
 class ICLRunner:
-    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128):
+    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128, prompt=None):
         self.task = task
         self.pairs = pairs
         self.seed = seed
@@ -254,7 +254,10 @@ class ICLRunner:
         self.train_pairs = [self.gen.sample(pairs, k=n_shot) for _ in range(batch_size)]
         self.eval_pairs = [self.gen.sample(pairs, k=1) for _ in range(batch_size)]
 
-        self.prompt = "<|user|>\nFollow the pattern:\n{}"
+        if prompt is None:
+            self.prompt = "<|user|>\nFollow the pattern:\n{}"
+        else:
+            self.prompt = prompt
 
     def get_prompt(self, pairs):
         return self.prompt.format("\n".join([f"{x} -> {y}" for x, y in pairs]))
@@ -297,7 +300,7 @@ def make_get_resids(llama, layer_target):
 class FeatureSearch:
     def __init__(self, task, pairs, target_layer, llama, tokenizer, batch_size=32, n_shot=20, early_stopping_steps=50, 
                  max_seq_len=256, iterations=2000, seed=9, l1_coeff=2e-2, lr=1e-2, sep=1599, pad_token=32000,
-                 init_w=0.5, sae_v=4, n_first=3, picked_features=None, sae=None):
+                 init_w=0.5, sae_v=4, n_first=3, picked_features=None, sae=None, prompt=None):
         self.task = task
         self.target_layer = target_layer
         self.sae_v = sae_v
@@ -319,8 +322,9 @@ class FeatureSearch:
         self.tokenizer = tokenizer
         self.sep = sep
         self.pad_token = pad_token
+        self.prompt = prompt
 
-        self.runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed)
+        self.runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt)
         
         self.train_inputs = tokenized_to_inputs(
             **self.runner.get_tokens(self.runner.train_pairs, tokenizer), llama=llama
@@ -359,6 +363,10 @@ class FeatureSearch:
             weights = jax.nn.relu(weights)
 
         recon = jnp.einsum("fv,f->v", self.sae["W_dec"], weights)
+
+        if "out_norm_factor" in self.sae:
+            recon = recon / self.sae["out_norm_factor"]
+
         recon = recon.astype('bfloat16')
 
         mask = self.eval_tokens == self.sep
