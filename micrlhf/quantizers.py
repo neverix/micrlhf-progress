@@ -124,6 +124,7 @@ def matmul_8bit_kernel(inputs_ref, quants_ref, scale_ref, outputs_ref, accum_ref
 
 # def matmul_4bit(inputs, scale_factors, scale_offsets, qs1, qs2):
 def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref, qs2_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=256):
+    assert quant_group_size == 256
     block_m = qs2_ref.shape[1]
     accum_ref[...] = jnp.zeros_like(accum_ref)
 
@@ -169,6 +170,7 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
         
         num_blocks = scale_factors.shape[0]
+        assert num_blocks == 1
         scale_factors = scale_factors.reshape(-1, 1, 1)
         scale_offsets = scale_offsets.reshape(-1, 1, 1)
         qs2 = qs2.reshape(-1, 4, 32)
@@ -204,18 +206,43 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         matrix = factors * qs2.astype(factors.dtype)
         matrix = matrix - offsets
         # matrix = matrix.astype(jnp.float32)
-    
-        matrix = matrix.reshape(num_blocks, -1, 256)
+
+        matrix = matrix.reshape(num_blocks, -1, 256).astype(jnp.bfloat16)
         # matrix: [num_blocks, block_m, 256]
-        matrix = matrix.transpose(0, 2, 1).reshape(block_k, block_m)
-        # matrix = matrix.transpose(1, 0, 2).reshape(block_m, block_k).transpose(1, 0)
-        # matrix: [block_k, block_m]
 
-        result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), matrix.astype(jnp.bfloat16),
-                                     dimension_numbers=(((1,), (0,)), ((), ())),
-                                     preferred_element_type=jnp.float32,)
+        block_inputs = inputs.astype(jnp.bfloat16).reshape(inputs.shape[0], num_blocks, 256)
+        def final_loop(b, _):
+            result = jax.lax.dot_general(block_inputs[:, b],
+                                         matrix[b],
+                                        dimension_numbers=(((1,), (1,)), ((), ())),
+                                        preferred_element_type=jnp.float32,)
+            accum_ref[...] += result
+        jax.lax.fori_loop(0, num_blocks, final_loop, init_val=None)
+        # for b in range(matrix.shape[0]):
+        #     result = jax.lax.dot_general(block_inputs[:, b],
+        #                                  matrix[b].astype(jnp.bfloat16),
+        #                                 dimension_numbers=(((1,), (0,)), ((), ())),
+        #                                 preferred_element_type=jnp.float32,)
+        #     accum_ref[...] += result
 
-        accum_ref[...] += result
+        # result = jax.lax.dot_general(inputs.astype(jnp.bfloat16).reshape(inputs.shape[0], num_blocks, 256),
+        #                              matrix.astype(jnp.bfloat16),
+        #                              dimension_numbers=(((1, 2), (0, 2)), ((), ())),
+        #                              preferred_element_type=jnp.float32,)
+
+        # accum_ref[...] += result
+    
+        # matrix = matrix.reshape(num_blocks, -1, 256)
+        # # matrix: [num_blocks, block_m, 256]
+        # matrix = matrix.transpose(0, 2, 1).reshape(block_k, block_m)
+        # # matrix = matrix.transpose(1, 0, 2).reshape(block_m, block_k).transpose(1, 0)
+        # # matrix: [block_k, block_m]
+
+        # result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), matrix.astype(jnp.bfloat16),
+        #                              dimension_numbers=(((1,), (0,)), ((), ())),
+        #                              preferred_element_type=jnp.float32,)
+
+        # accum_ref[...] += result
     jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None)
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
@@ -242,7 +269,7 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
 
     block_x, block_y, block_k = 256, 256, 512
     if kernel.__name__ == "matmul_4bit_kernel":
-        block_x, block_y, block_k = 128, 128, 4096
+        block_x, block_y, block_k = 128, 128, 256
     y = tensors[0].shape[2]
     batch_mesh = mesh.shape[batch_axis]
     per_block_size = inputs.shape[0] // batch_mesh
