@@ -1,6 +1,7 @@
 import os
 
 import jax
+import jax.numpy as jnp
 import shutil
 from huggingface_hub import HfFileSystem
 from safetensors.flax import load_file, save_file
@@ -66,6 +67,10 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
     if "mean_norm" in sae_weights:
         norm_factor = (sae_weights["W_enc"].shape[0] ** 0.5) / sae_weights["mean_norm"]
         sae_weights["norm_factor"] = norm_factor
+        if "tgt_mean_norm" in sae_weights:
+            sae_weights["out_norm_factor"] = sae_weights["W_enc"].shape[0] ** 0.5 / sae_weights["tgt_mean_norm"]
+        else:
+            sae_weights["out_norm_factor"] = norm_factor
 
     return sae_weights
 
@@ -89,6 +94,34 @@ def sae_encode(sae, vector):
     decoded = post_relu @ sae["W_dec"] + sae["b_dec"]
     return pre_relu, post_relu, decoded
 
+def resids_to_weights(vector, sae):
+    inputs = vector
+
+    if "norm_factor" in sae:
+        inputs = inputs * sae["norm_factor"]
+
+    pre_relu = inputs @ sae["W_enc"]
+    pre_relu = pre_relu +sae["b_enc"]
+    post_relu = jax.nn.relu(pre_relu)
+    
+    post_relu = (post_relu > 0) * jax.nn.relu((inputs @ sae["W_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
+
+    return post_relu
+
+def weights_to_resid(weights, sae):
+    if "s_gate" in sae:
+        weights = (weights > 0) * jax.nn.relu(weights * jax.nn.softplus(sae["s_gate"]) * sae.get("scaling_factor", 1.0) + sae["b_gate"])   
+    else:
+        weights = jax.nn.relu(weights)
+
+    recon = jnp.einsum("fv,bsf->bsv", sae["W_dec"], weights)
+
+    if "out_norm_factor" in sae:
+        recon = recon / sae["out_norm_factor"]
+
+    # recon = recon.astype('bfloat16')
+    return recon
+
 def sae_encode_gated(sae, vector, ablate_features=None):
     inputs = vector
 
@@ -105,8 +138,8 @@ def sae_encode_gated(sae, vector, ablate_features=None):
         post_relu = post_relu.at[ablate_features].set(0)
 
     recon = post_relu @ sae["W_dec"]
-    if "norm_factor" in sae:
-        recon = recon / sae["norm_factor"]
+    if "out_norm_factor" in sae:
+        recon = recon / sae["out_norm_factor"]
 
     recon = recon + sae["b_dec"]
 
