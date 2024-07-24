@@ -123,7 +123,7 @@ def matmul_8bit_kernel(inputs_ref, quants_ref, scale_ref, outputs_ref, accum_ref
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 # def matmul_4bit(inputs, scale_factors, scale_offsets, qs1, qs2):
-def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref, qs2_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=256):
+def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref, qs2_ref, arange_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=256):
     sl = lambda x, s: x << s
     sr = lambda x, s: jax.lax.shift_right_logical(x, s)
 
@@ -180,10 +180,15 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(quot, 8), 0, slice(None))).astype(jnp.float32)
         # selector = jnp.array([[x] for x in range(8)], dtype=jnp.int32) == rem
         
-        # 🤡
+        # # 🤡
+        # zero = jnp.zeros((1, 1), dtype=jnp.int32)
+        # arange_2 = jnp.concatenate([zero, zero + 1], axis=0)
+        # arange_4 = jnp.concatenate([arange_2, arange_2 + 2], axis=0)
+        # arange_8 = jnp.concatenate([arange_4, arange_4 + 4], axis=0)
         zero = jnp.zeros((1, 1), dtype=jnp.int32)
-        arange_2 = jnp.concatenate([zero, zero + 1], axis=0)
-        arange_8 = jnp.concatenate([arange_2, arange_2 + 2, arange_2 + 4, arange_2 + 6], axis=0)
+        arange_2 = jnp.concatenate([zero, zero + 1], axis=1)
+        arange_4 = jnp.concatenate([arange_2, arange_2 + 2], axis=1)
+        arange_8 = jnp.concatenate([arange_4, arange_4 + 4], axis=1).T
         selector = arange_8 == rem
 
         scale_factors = (scale_factors * selector).sum(axis=0)
@@ -201,9 +206,15 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
         
+        # 🤡 x2
         # qs1 = jnp.stack([qs1[:, i] for i in range(12) for _ in range(32)], -1)
+        def rep32(x):
+            for _ in range(5):
+                x = jnp.concatenate([x, x], -1)
+            return x
+        
         def retile4(start):
-            return jnp.stack([qs1[:, i] for i in range(start, start+4) for _ in range(32)], -1)
+            return jnp.concatenate([rep32(qs1[:, i:i+1]) for i in range(start, start+4)], -1)
         chunk1 = retile4(0)
         chunk2 = retile4(4)
         chunk3 = retile4(8)
@@ -257,7 +268,7 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         qs2r = sr(qs2, 4) & 0b1111
         # qs2 = jnp.stack([qs2l.reshape(-1, 4, 32), qs2r.reshape(-1, 4, 32)], axis=2).reshape(-1, 8, 32)
 
-        block_inputs = inputs.astype(jnp.bfloat16).reshape(inputs.shape[0], 256)
+        block_inputs = inputs.astype(jnp.float32).reshape(inputs.shape[0], 256)
 
         for i in range(2):
             qs2 = (qs2l, qs2r)[i].astype(jnp.float32)
