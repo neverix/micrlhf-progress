@@ -123,7 +123,7 @@ def matmul_8bit_kernel(inputs_ref, quants_ref, scale_ref, outputs_ref, accum_ref
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 # def matmul_4bit(inputs, scale_factors, scale_offsets, qs1, qs2):
-def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref, qs2_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=256):
+def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_1_ref, qs1_2_ref, qs2_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=256):
     sl = lambda x, s: x << s
     sr = lambda x, s: jax.lax.shift_right_logical(x, s)
 
@@ -168,10 +168,24 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         #                              preferred_element_type=jnp.float32,)
         # accum_ref[...] += result
     
-        qs1 = pl.load(qs1_ref, (i, slice(None), slice(None))).astype(jnp.int32)
+        # qs1 = pl.load(qs1_ref, (i, slice(None), slice(None))).astype(jnp.int32)
+        qs1_1 = pl.load(qs1_1_ref, (i, slice(None), slice(None))).astype(jnp.int32)
+        qs1_2 = pl.load(qs1_2_ref, (i, slice(None), slice(None))).astype(jnp.int32)
+        qs1 = jnp.concatenate([qs1_1, qs1_2], axis=1)
         qs2 = pl.load(qs2_ref, (i, slice(None), slice(None))).astype(jnp.int32)
-        scale_factors = pl.load(scale_factors_ref, (i, 0, slice(None)))
-        scale_offsets = pl.load(scale_offsets_ref, (i, 0, slice(None)))
+        # qs1 = pl.load(qs1_ref, (pl.dslice(i,1), slice(None), slice(None))).astype(jnp.int32)[0]
+        # qs2 = pl.load(qs2_ref, (pl.dslice(i,1), slice(None), slice(None))).astype(jnp.int32)[0]
+        # scale_factors = pl.load(scale_factors_ref, (i, slice(None)))
+        # scale_offsets = pl.load(scale_offsets_ref, (i, slice(None)))
+        
+        quot, rem = jax.lax.div(i, 8), jax.lax.rem(i, 8)
+        scale_factors = pl.load(scale_factors_ref, (pl.dslice(quot, 8), 0, slice(None)))
+        scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(quot, 8), 0, slice(None)))
+        selector = jnp.array([[x] for x in range(8)], dtype=jnp.int32) == rem
+        scale_factors = (scale_factors * selector).sum(axis=0)
+        scale_offsets = (scale_offsets * selector).sum(axis=0)
+        # scale_factors = pl.load(scale_factors_ref, (pl.dslice(i,1), pl.dslice(0), slice(None)))[0]
+        # scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(i,1), pl.dslice(0), slice(None)))[0]
         
         num_blocks = 1
         # scale_factors = scale_factors.reshape(-1)
@@ -228,16 +242,18 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
 
         for i in range(2):
             qs2 = (qs2l, qs2r)[i].astype(jnp.float32)
-            qs2 = qs2.reshape(-1, 4, 32)
+            # qs2 = qs2.reshape(-1, 4, 32)
             # qs2 = qs2.T.reshape(4, 32, -1).transpose(2, 0, 1)
             
             # matrix = factors * qs2.astype(factors.dtype)
             fact = scale_factors[:, None] * (left_scale, right_scale)[i]
-            matrix = fact[:, :, None] * qs2.astype(fact.dtype)
+            
+            qs2 = qs2.reshape(-1, 32)
+            matrix = fact.reshape(-1, 1) * qs2.astype(fact.dtype)
             # matrix = matrix - offsets
             # off = (offsets[:, :4], offsets[:, 4:])[i]
             off = scale_offsets[:, None] * (left_offset, right_offset)[i]
-            matrix = matrix - off[:, :, None]
+            matrix = matrix - off.reshape(-1, 1)
             # matrix = matrix.astype(jnp.float32)
 
             # matrix = matrix.reshape(num_blocks, -1, 128).astype(jnp.bfloat16)
@@ -281,7 +297,7 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         #                              preferred_element_type=jnp.float32,)
 
         # accum_ref[...] += result
-    jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None)
+    jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None, unroll=True)
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
     # scale_factors = scale_factors.reshape(num_blocks, 1, 1, -1)
@@ -299,7 +315,7 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
     # return inputs @ matrix.reshape(inputs.shape[-1], -1)
 
 def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, out_axis=None):
-    is_transpose = [False] * len(tensors) if kernel.__name__ != "matmul_4bit_kernel" else [False, False, True, True]
+    is_transpose = [False] * len(tensors) if kernel.__name__ != "matmul_4bit_kernel" else [False, False, True, True, True]
 
     inputs = inputs.astype(jnp.bfloat16)
     tensors = [t if t.dtype.kind not in ("V", "f") else t.astype(jnp.bfloat16) for t in tensors]
@@ -335,26 +351,33 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
         tensors = [jnp.pad(t, ((0, 0), (0, 0), (0, y_pad))) for t in tensors]
 
     def kernel_call(inputs, *tensors):
+        tensors = tuple((tensor if not is_t else tensor.T) for tensor, is_t in zip(tensors, is_transpose))
+        
+        if kernel.__name__ == "matmul_4bit_kernel":
+            tensors = tensors[:2] + (tensors[2][:, :8], tensors[2][:, 8:]) + tensors[3:]
+        
+        grid_spec = pltpu.PrefetchScalarGridSpec(
+            num_scalar_prefetch=0,
+            grid=(int(inputs.shape[0] / block_x), int(per_mp_output_size / block_y)),
+            in_specs=[
+                pl.BlockSpec(lambda i, j: (i, 0), (block_x, inputs.shape[1])),
+            ] + [
+                pl.BlockSpec(lambda i, j: ((0, 0, j)) if not is_t else (0, j, 0),
+                                ((t.shape[0], t.shape[1], block_y)) if not is_t else (t.shape[0], block_y, t.shape[1]))
+                for t, is_t in zip(tensors, is_transpose)
+            ],
+            out_specs=pl.BlockSpec(
+                lambda i, j: (i, j), (block_x, block_y)
+            ),
+            scratch_shapes=[pltpu.VMEM((block_x, block_y), jnp.float32)],
+        )
         outputs = pl.pallas_call(
             partial(kernel, block_k=block_k),
-            grid_spec=pltpu.PrefetchScalarGridSpec(
-                num_scalar_prefetch=0,
-                grid=(int(inputs.shape[0] / block_x), int(per_mp_output_size / block_y)),
-                in_specs=[
-                    pl.BlockSpec(lambda i, j: (i, 0), (block_x, inputs.shape[1])),
-                ] + [
-                    pl.BlockSpec(lambda i, j: (0, 0, j) if not is_t else (0, j, 0), (t.shape[0], t.shape[1], block_y) if not is_t else (t.shape[0], block_y, t.shape[1]))
-                    for t, is_t in zip(tensors, is_transpose)
-                ],
-                out_specs=pl.BlockSpec(
-                    lambda i, j: (i, j), (block_x, block_y)
-                ),
-                scratch_shapes=[pltpu.VMEM((block_x, block_y), jnp.float32)],
-            ),
+            grid_spec=grid_spec,
             out_shape=jax.ShapeDtypeStruct((inputs.shape[0], per_mp_output_size), inputs.dtype),
             compiler_params=dict(mosaic=dict(dimension_semantics=("parallel", "arbitrary"))),
-            interpret=False
-        )(inputs, *((tensor if not is_t else tensor.T) for tensor, is_t in zip(tensors, is_transpose)))
+            # interpret=True
+        )(inputs, *tensors)
         if in_axis is not None:
             outputs = jax.lax.psum(outputs, axis_name=in_axis)
         return outputs
