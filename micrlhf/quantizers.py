@@ -123,7 +123,11 @@ def matmul_8bit_kernel(inputs_ref, quants_ref, scale_ref, outputs_ref, accum_ref
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 # def matmul_4bit(inputs, scale_factors, scale_offsets, qs1, qs2):
-def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref, qs2_ref, arange_ref, outputs_ref, accum_ref, *, block_k, quant_group_size=256):
+def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref, qs2_ref,
+                    #    arange_ref,
+                       outputs_ref, accum_ref, *, block_k, quant_group_size=256,
+                       load_slice=8,
+                       ):
     sl = lambda x, s: x << s
     sr = lambda x, s: jax.lax.shift_right_logical(x, s)
 
@@ -134,7 +138,7 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
     block_group = block_k // quant_group_size
     assert block_k == quant_group_size
     loop_iterations = max(1, inputs_ref.shape[-1] // block_k)
-    arange_8 = pl.load(arange_ref, (slice(None), slice(None)))
+    # arange_8 = pl.load(arange_ref, (slice(None), slice(None)))
     def matmul_loop(i, _):
         # qs1 = pl.load(qs1_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None))).astype(jnp.int32)
         # qs2 = pl.load(qs2_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None))).astype(jnp.int32)
@@ -176,32 +180,46 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         # scale_factors = pl.load(scale_factors_ref, (i, slice(None)))
         # scale_offsets = pl.load(scale_offsets_ref, (i, slice(None)))
         
-        quot, rem = jax.lax.div(i, 8), jax.lax.rem(i, 8)
-        scale_factors = pl.load(scale_factors_ref, (pl.dslice(quot, 8), 0, slice(None))).astype(jnp.float32)
-        scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(quot, 8), 0, slice(None))).astype(jnp.float32)
+        quot, rem = jax.lax.div(i, load_slice), jax.lax.rem(i, load_slice)
+        scale_factors = pl.load(scale_factors_ref, (pl.dslice(quot, load_slice), 0, slice(None))).astype(jnp.float32)
+        scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(quot, load_slice), 0, slice(None))).astype(jnp.float32)
         # selector = jnp.array([[x] for x in range(8)], dtype=jnp.int32) == rem
-        
-        # # # 🤡
-        # # zero = jnp.zeros((1, 1), dtype=jnp.int32)
-        # # arange_2 = jnp.concatenate([zero, zero + 1], axis=0)
-        # # arange_4 = jnp.concatenate([arange_2, arange_2 + 2], axis=0)
-        # # arange_8 = jnp.concatenate([arange_4, arange_4 + 4], axis=0)
-        # zero = jnp.zeros((1, 1), dtype=jnp.int32)
-        # arange_2 = jnp.concatenate([zero, zero + 1], axis=1)
-        # arange_4 = jnp.concatenate([arange_2, arange_2 + 2], axis=1)
-        # arange_8 = jnp.concatenate([arange_4, arange_4 + 4], axis=1).T
-        selector = arange_8 == rem
 
-        # i've lost all dignity at this point..
-        def redsum(x):
-            for _ in range(3):
-                x = x[:len(x) // 2] + x[len(x) // 2:]
-            return x[0]
-        combine = lambda a, b: redsum(a * b)
-        # combine = lambda a, b: jax.lax.dot_general(a, b.astype(jnp.float32),
-        #                               (((0,), (0,)), ((1,), (1,))),)
-        scale_factors = combine(scale_factors, selector)
-        scale_offsets = combine(scale_offsets, selector)
+        def correct_selection_please_generator(array, rem, lb=0, ub=load_slice):
+            def return_correct_selection_please():
+                if ub - lb <= 2:
+                    return jax.lax.cond(rem == lb, lambda: array[lb], lambda: array[lb + 1])
+                return jax.lax.cond(rem < (lb + ub) // 2,
+                                    correct_selection_please_generator(array, rem, lb, (lb + ub) // 2),
+                                    correct_selection_please_generator(array, rem, (lb + ub) // 2, ub))
+            return return_correct_selection_please
+        scale_factors = correct_selection_please_generator(scale_factors, rem)()
+        scale_offsets = correct_selection_please_generator(scale_offsets, rem)()
+            
+        # scale_factors = scale_factors[rem]
+        # scale_offsets = scale_offsets[rem]
+
+        # # # # 🤡
+        # # # zero = jnp.zeros((1, 1), dtype=jnp.int32)
+        # # # arange_2 = jnp.concatenate([zero, zero + 1], axis=0)
+        # # # arange_4 = jnp.concatenate([arange_2, arange_2 + 2], axis=0)
+        # # # arange_8 = jnp.concatenate([arange_4, arange_4 + 4], axis=0)
+        # # zero = jnp.zeros((1, 1), dtype=jnp.int32)
+        # # arange_2 = jnp.concatenate([zero, zero + 1], axis=1)
+        # # arange_4 = jnp.concatenate([arange_2, arange_2 + 2], axis=1)
+        # # arange_8 = jnp.concatenate([arange_4, arange_4 + 4], axis=1).T
+        # selector = arange_8 == rem
+
+        # # i've lost all dignity at this point..
+        # def redsum(x):
+        #     for _ in range(3):
+        #         x = x[:len(x) // 2] + x[len(x) // 2:]
+        #     return x[0]
+        # combine = lambda a, b: redsum(a * b)
+        # # combine = lambda a, b: jax.lax.dot_general(a, b.astype(jnp.float32),
+        # #                               (((0,), (0,)), ((1,), (1,))),)
+        # scale_factors = combine(scale_factors, selector)
+        # scale_offsets = combine(scale_offsets, selector)
         # scale_factors = (scale_factors * selector).sum(axis=0)
         # scale_offsets = (scale_offsets * selector).sum(axis=0)
         # scale_factors = pl.load(scale_factors_ref, (pl.dslice(i,1), pl.dslice(0), slice(None)))[0]
@@ -217,21 +235,30 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
         
-        # 🤡 x2
-        # qs1 = jnp.stack([qs1[:, i] for i in range(12) for _ in range(32)], -1)
-        def rep32(x):
-            x = jnp.stack([x, x, x, x], -1)
-            x = jnp.concatenate([x, x, x, x], -1)
-            x = jnp.concatenate([x, x], -1)
-            # for _ in range(5):
-            #     x = jnp.concatenate([x, x], -1)
-            return x
+        # # 🤡 x2
+        # # qs1 = jnp.stack([qs1[:, i] for i in range(12) for _ in range(32)], -1)
+        # def rep32(x):
+        #     x = jnp.stack([x] * 8, -1)
+        #     x = jnp.concatenate([x] * 4, -1)
+            
+        #     # x = jnp.stack([x, x, x, x], -1)
+        #     # x = jnp.concatenate([x, x, x, x], -1)
+        #     # x = jnp.concatenate([x, x], -1)
+            
+        #     # for _ in range(5):
+        #     #     x = jnp.concatenate([x, x], -1)
+        #     return x
         
-        def retile4(start):
-            return jnp.concatenate([rep32(qs1[:, i]) for i in range(start, start+4)], -1)
-        chunk1 = retile4(0)
-        chunk2 = retile4(4)
-        chunk3 = retile4(8)
+        # def retile4(start):
+        #     return jnp.stack([qs1[:, i] for i in range(start, start+4) for _ in range(32)], -1)
+        #     # return jnp.concatenate([rep32(qs1[:, i]) for i in range(start, start+4)], -1)
+        # chunk1 = retile4(0)
+        # chunk2 = retile4(4)
+        # chunk3 = retile4(8)
+        
+        chunk1 = qs1[:, :4]
+        chunk2 = qs1[:, 4:8]
+        chunk3 = qs1[:, 8:]
         
         # sl = lambda x, s: jax.lax.shift_left(x, s)
         # sr = lambda x, s: x >> s
@@ -291,17 +318,26 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
             
             # matrix = factors * qs2.astype(factors.dtype)
             fact = scale_factors[:, None] * (left_scale, right_scale)[i]
+            off = scale_offsets[:, None] * (left_offset, right_offset)[i]
 
             # (128, 4) -> (128, 128) by repetition
             # retile = lambda x: jnp.tile(x, (1, 32))  # why are all lax implementations insane?! this reshapes to (1, 128, 1, 4)
             # retile = lambda x: jnp.stack([x] * 32, axis=-1).reshape((128, 128))
-            retile = lambda x: x
+            
+            # retile = lambda x: x
+            # retile = lambda x: jnp.stack([x[:, i] for i in range(4) for _ in range(32)], -1)
+            
+            matrix_chunks = []
+            for j in range(4):
+                matrix_chunk = fact[:, j:j+1] * qs2[:, j*32:j*32+32] - off[:, j:j+1]
+                matrix_chunks.append(matrix_chunk)
+            matrix = jnp.concatenate(matrix_chunks, axis=1)
 
-            matrix = retile(fact) * qs2.astype(fact.dtype)
-            # matrix = matrix - offsets
-            # off = (offsets[:, :4], offsets[:, 4:])[i]
-            off = scale_offsets[:, None] * (left_offset, right_offset)[i]
-            matrix = matrix - retile(off)
+            # matrix = retile(fact) * qs2.astype(fact.dtype)
+            # # matrix = matrix - offsets
+            # # off = (offsets[:, :4], offsets[:, 4:])[i]
+            # matrix = matrix - retile(off)
+            
             # matrix = matrix.astype(jnp.float32)
 
             # matrix = matrix.reshape(num_blocks, -1, 128).astype(jnp.bfloat16)
@@ -401,8 +437,8 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
     def kernel_call(inputs, *tensors):
         tensors = tuple((tensor if not is_t else tensor.T) for tensor, is_t in zip(tensors, is_transpose))
         
-        if kernel.__name__ == "matmul_4bit_kernel":
-            tensors = tensors + (jnp.tile(jnp.arange(8, dtype=jnp.int32).reshape(8, 1), (1, 128)),)
+        # if kernel.__name__ == "matmul_4bit_kernel":
+        #     tensors = tensors + (jnp.tile(jnp.arange(8, dtype=jnp.int32).reshape(8, 1), (1, 128)),)
 
         grid_spec = pltpu.PrefetchScalarGridSpec(
             num_scalar_prefetch=0,
@@ -413,9 +449,11 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
                 pl.BlockSpec(lambda i, j: ((0, 0, j)) if not is_t else (0, j, 0),
                                 ((t.shape[0], t.shape[1], block_y)) if not is_t else (t.shape[0], block_y, t.shape[1]))
                 for t, is_t in zip(tensors, is_transpose)
-            ] + ([] if kernel.__name__ != "matmul_4bit_kernel" else [
-                pl.BlockSpec(lambda i, j: (0, 0), tensors[-1].shape)
-            ]),
+            ]
+            # + ([] if kernel.__name__ != "matmul_4bit_kernel" else [
+            #     pl.BlockSpec(lambda i, j: (0, 0), tensors[-1].shape)
+            # ])
+            ,
             out_specs=pl.BlockSpec(
                 lambda i, j: (i, j), (block_x, block_y)
             ),
