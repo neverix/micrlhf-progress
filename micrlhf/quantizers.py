@@ -231,7 +231,7 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         # scale_factors = scale_factors.reshape(-1, 1, 1)
         # scale_offsets = scale_offsets.reshape(-1, 1, 1)
         
-        qs1 = qs1.reshape(-1, 12)
+        qs1 = qs1.reshape(12, -1)
         
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
         
@@ -256,9 +256,9 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
         # chunk2 = retile4(4)
         # chunk3 = retile4(8)
         
-        chunk1 = qs1[:, :4]
-        chunk2 = qs1[:, 4:8]
-        chunk3 = qs1[:, 8:]
+        chunk1 = qs1[:4]
+        chunk2 = qs1[4:8]
+        chunk3 = qs1[8:]
         
         # sl = lambda x, s: jax.lax.shift_left(x, s)
         # sr = lambda x, s: x >> s
@@ -317,8 +317,8 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
             # qs2 = qs2.T.reshape(4, 32, -1).transpose(2, 0, 1)
             
             # matrix = factors * qs2.astype(factors.dtype)
-            fact = scale_factors[:, None] * (left_scale, right_scale)[i]
-            off = scale_offsets[:, None] * (left_offset, right_offset)[i]
+            fact = scale_factors * (left_scale, right_scale)[i]
+            off = scale_offsets * (left_offset, right_offset)[i]
 
             # (128, 4) -> (128, 128) by repetition
             # retile = lambda x: jnp.tile(x, (1, 32))  # why are all lax implementations insane?! this reshapes to (1, 128, 1, 4)
@@ -329,9 +329,9 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
             
             # matrix_chunks = []
             for j in range(4):
-                matrix_chunk = fact[:, j:j+1] * qs2[:, j*32:j*32+32] - off[:, j:j+1]
+                matrix_chunk = fact[j] * qs2[j*32:j*32+32, :] - off[j]
                 
-                matrix = matrix_chunk.reshape(-1, 32).astype(jnp.bfloat16).T
+                matrix = matrix_chunk.reshape(32, -1).astype(jnp.float32)
                 block = tuple(block_inputs[:, k*32:k*32+32] for k in range(8))[i * 4 + j]
                 result = jax.lax.dot_general(block, matrix,
                                             dimension_numbers=(((1,), (0,)), ((), ())),
@@ -407,7 +407,7 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
     # return inputs @ matrix.reshape(inputs.shape[-1], -1)
 
 def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, out_axis=None):
-    is_transpose = [False] * len(tensors) if kernel.__name__ != "matmul_4bit_kernel" else [False, False, True, True]
+    is_transpose = [False] * len(tensors) if kernel.__name__ != "matmul_4bit_kernel" else [False, False, False, False]
 
     inputs = inputs.astype(jnp.bfloat16)
     tensors = [t if t.dtype.kind not in ("V", "f") else t.astype(jnp.bfloat16) for t in tensors]
