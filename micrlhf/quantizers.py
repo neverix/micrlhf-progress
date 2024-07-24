@@ -126,8 +126,8 @@ def matmul_8bit_kernel(inputs_ref, quants_ref, scale_ref, outputs_ref, accum_ref
 def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref, qs2_ref,
                     #    arange_ref,
                        outputs_ref, accum_ref, *, block_k, quant_group_size=256,
-                       load_slice=8,
                        ):
+    load_slice = 8
     sl = lambda x, s: x << s
     sr = lambda x, s: jax.lax.shift_right_logical(x, s)
 
@@ -327,11 +327,19 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
             # retile = lambda x: x
             # retile = lambda x: jnp.stack([x[:, i] for i in range(4) for _ in range(32)], -1)
             
-            matrix_chunks = []
+            # matrix_chunks = []
             for j in range(4):
                 matrix_chunk = fact[:, j:j+1] * qs2[:, j*32:j*32+32] - off[:, j:j+1]
-                matrix_chunks.append(matrix_chunk)
-            matrix = jnp.concatenate(matrix_chunks, axis=1)
+                
+                matrix = matrix_chunk.reshape(-1, 32).astype(jnp.bfloat16).T
+                block = tuple(block_inputs[:, k*32:k*32+32] for k in range(8))[i * 4 + j]
+                result = jax.lax.dot_general(block, matrix,
+                                            dimension_numbers=(((1,), (0,)), ((), ())),
+                                            preferred_element_type=jnp.float32,)
+                accum_ref[...] += result
+                
+            #     matrix_chunks.append(matrix_chunk)
+            # matrix = jnp.concatenate(matrix_chunks, axis=1)
 
             # matrix = retile(fact) * qs2.astype(fact.dtype)
             # # matrix = matrix - offsets
@@ -342,12 +350,12 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
 
             # matrix = matrix.reshape(num_blocks, -1, 128).astype(jnp.bfloat16)
 
-            matrix = matrix.reshape(-1, 128).astype(jnp.bfloat16)
-            block = (block_inputs[:, :128], block_inputs[:, 128:])[i]
-            result = jax.lax.dot_general(block, matrix,
-                                        dimension_numbers=(((1,), (1,)), ((), ())),
-                                        preferred_element_type=jnp.float32,)
-            accum_ref[...] += result
+            # matrix = matrix.reshape(-1, 128).astype(jnp.bfloat16)
+            # block = (block_inputs[:, :128], block_inputs[:, 128:])[i]
+            # result = jax.lax.dot_general(block, matrix,
+            #                             dimension_numbers=(((1,), (1,)), ((), ())),
+            #                             preferred_element_type=jnp.float32,)
+            # accum_ref[...] += result
         
         # def final_loop(b, _):
         #     result = jax.lax.dot_general(block_inputs[:, b],
