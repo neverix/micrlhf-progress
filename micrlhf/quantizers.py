@@ -311,6 +311,7 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
 
         block_inputs = inputs.astype(jnp.float32).reshape(inputs.shape[0], 256)
 
+        matrix_chunks = []
         for i in range(2):
             qs2 = (qs2l, qs2r)[i].astype(jnp.float32)
             # qs2 = qs2.reshape(-1, 4, 32)
@@ -327,10 +328,9 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
             # retile = lambda x: x
             # retile = lambda x: jnp.stack([x[:, i] for i in range(4) for _ in range(32)], -1)
             
-            matrix_chunks = []
             for j in range(4):
                 matrix_chunk = fact[j] * qs2[j*32:j*32+32, :] - off[j]
-                matrix_chunks.append(matrix_chunk)
+                matrix_chunks.append(matrix_chunk.astype(jnp.float32))
                 
                 # matrix = matrix_chunk.reshape(32, -1).astype(jnp.float32)
                 # block = tuple(block_inputs[:, k*32:k*32+32] for k in range(8))[i * 4 + j]
@@ -340,14 +340,14 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
                 # accum_ref[...] += result
                 
             #     matrix_chunks.append(matrix_chunk)
-            matrix = jnp.concatenate(matrix_chunks, axis=0)
-            
-            matrix = matrix.reshape(-1, 128).astype(jnp.bfloat16)
-            block = (block_inputs[:, :128], block_inputs[:, 128:])[i]
-            result = jax.lax.dot_general(block, matrix,
-                                        dimension_numbers=(((1,), (0,)), ((), ())),
-                                        preferred_element_type=jnp.float32,)
-            accum_ref[...] += result
+        matrix = jnp.concatenate(matrix_chunks, axis=0)
+        
+        matrix = matrix.reshape(256, -1).astype(jnp.float32)
+        block = block_inputs
+        result = jax.lax.dot_general(block, matrix,
+                                    dimension_numbers=(((1,), (0,)), ((), ())),
+                                    preferred_element_type=jnp.float32,)
+        accum_ref[...] += result
 
             # matrix = retile(fact) * qs2.astype(fact.dtype)
             # # matrix = matrix - offsets
