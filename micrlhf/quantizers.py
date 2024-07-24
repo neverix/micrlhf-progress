@@ -123,9 +123,14 @@ def matmul_8bit_kernel(inputs_ref, quants_ref, scale_ref, outputs_ref, accum_ref
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 # def matmul_4bit(inputs, scale_factors, scale_offsets, qs1, qs2):
-def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref, qs2_ref,
-                    #    arange_ref,
-                       outputs_ref, accum_ref, *, block_k, quant_group_size=256,
+def matmul_4bit_kernel(inputs_ref,
+                       
+                       scale_factors_ref, scale_offsets_ref,
+                       qs1_ref, qs2_ref,
+                       
+                       outputs_ref, accum_ref, *,
+                       
+                       block_k, quant_group_size=256,
                        ):
     load_slice = 8
     sl = lambda x, s: x << s
@@ -138,208 +143,44 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
     block_group = block_k // quant_group_size
     assert block_k == quant_group_size
     loop_iterations = max(1, inputs_ref.shape[-1] // block_k)
-    # arange_8 = pl.load(arange_ref, (slice(None), slice(None)))
     def matmul_loop(i, _):
-        # qs1 = pl.load(qs1_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None))).astype(jnp.int32)
-        # qs2 = pl.load(qs2_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None))).astype(jnp.int32)
-        # scale_factors = pl.load(scale_factors_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
-        # scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(i * block_group, block_group), slice(None), slice(None)))
-        
-        # num_blocks = qs2.shape[0]
-        # scale_factors = scale_factors.reshape(num_blocks, 1, 1, -1)
-        # scale_offsets = scale_offsets.reshape(num_blocks, 1, 1, -1)
-        # qs1 = qs1.reshape(num_blocks, 12, 1, -1)
-        # qs2 = qs2.reshape(num_blocks, 4, 32, -1)
-        
-        # inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
-        
-        # sl = lambda x, s: jax.lax.shift_left(x, s)
-        # sr = lambda x, s: jax.lax.shift_right_logical(x, s)
-        # # factor_scale = jnp.concatenate([qs1[:, 0:4] & 0b111111, (qs1[:, 8:] & 15) | sl((sr(qs1[:, 0:4], 6) % 4), 4)], axis=1)
-        # factor_scale = jnp.concatenate([qs1[:, 0:4], qs1[:, 8:]], axis=1)
-        # # offset_scale = jnp.concatenate([qs1[:, 4:8] & 0b111111, (sr(qs1[:, 8:], 4)) | sl((sr(qs1[:, 4:8], 6)), 4)], axis=1)
-        # offset_scale = jnp.concatenate([qs1[:, 4:8], qs1[:, 8:]], axis=1)
-        # factors = scale_factors * factor_scale.astype(scale_factors.dtype)
-        # offsets = scale_offsets * offset_scale.astype(scale_offsets.dtype)
-        
-        # # qs2 = jnp.stack([qs2 & 0xf, sr(qs2, 4) % 16], axis=2).reshape(num_blocks, 8, 32, -1)
-        # qs2 = jnp.stack([qs2, qs2], axis=2).reshape(num_blocks, 8, 32, -1)
-
-        # matrix = factors * qs2.astype(factors.dtype)
-        # matrix = matrix - offsets
-        # matrix = matrix.reshape(block_k, block_m)
-        # result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), matrix.astype(jnp.bfloat16),
-        #                              dimension_numbers=(((1,), (0,)), ((), ())),
-        #                              preferred_element_type=jnp.float32,)
-        # accum_ref[...] += result
-    
         qs1 = pl.load(qs1_ref, (i, slice(None), slice(None))).astype(jnp.int32)
         qs2 = pl.load(qs2_ref, (i, slice(None), slice(None))).astype(jnp.int32)
-        # qs1 = pl.load(qs1_ref, (pl.dslice(i,1), slice(None), slice(None))).astype(jnp.int32)[0]
-        # qs2 = pl.load(qs2_ref, (pl.dslice(i,1), slice(None), slice(None))).astype(jnp.int32)[0]
-        # scale_factors = pl.load(scale_factors_ref, (i, slice(None)))
-        # scale_offsets = pl.load(scale_offsets_ref, (i, slice(None)))
         
         quot, rem = jax.lax.div(i, load_slice), jax.lax.rem(i, load_slice)
         scale_factors = pl.load(scale_factors_ref, (pl.dslice(quot, load_slice), 0, slice(None))).astype(jnp.float32)
         scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(quot, load_slice), 0, slice(None))).astype(jnp.float32)
-        # selector = jnp.array([[x] for x in range(8)], dtype=jnp.int32) == rem
 
-        def correct_selection_please_generator(array, rem, lb=0, ub=load_slice):
-            def return_correct_selection_please():
-                if ub - lb <= 2:
-                    return jax.lax.cond(rem == lb, lambda: array[lb], lambda: array[lb + 1])
-                return jax.lax.cond(rem < (lb + ub) // 2,
-                                    correct_selection_please_generator(array, rem, lb, (lb + ub) // 2),
-                                    correct_selection_please_generator(array, rem, (lb + ub) // 2, ub))
-            return return_correct_selection_please
-        scale_factors = correct_selection_please_generator(scale_factors, rem)()
-        scale_offsets = correct_selection_please_generator(scale_offsets, rem)()
-            
-        # scale_factors = scale_factors[rem]
-        # scale_offsets = scale_offsets[rem]
-
-        # # # # 🤡
-        # # # zero = jnp.zeros((1, 1), dtype=jnp.int32)
-        # # # arange_2 = jnp.concatenate([zero, zero + 1], axis=0)
-        # # # arange_4 = jnp.concatenate([arange_2, arange_2 + 2], axis=0)
-        # # # arange_8 = jnp.concatenate([arange_4, arange_4 + 4], axis=0)
-        # # zero = jnp.zeros((1, 1), dtype=jnp.int32)
-        # # arange_2 = jnp.concatenate([zero, zero + 1], axis=1)
-        # # arange_4 = jnp.concatenate([arange_2, arange_2 + 2], axis=1)
-        # # arange_8 = jnp.concatenate([arange_4, arange_4 + 4], axis=1).T
-        # selector = arange_8 == rem
-
-        # # i've lost all dignity at this point..
-        # def redsum(x):
-        #     for _ in range(3):
-        #         x = x[:len(x) // 2] + x[len(x) // 2:]
-        #     return x[0]
-        # combine = lambda a, b: redsum(a * b)
-        # # combine = lambda a, b: jax.lax.dot_general(a, b.astype(jnp.float32),
-        # #                               (((0,), (0,)), ((1,), (1,))),)
-        # scale_factors = combine(scale_factors, selector)
-        # scale_offsets = combine(scale_offsets, selector)
-        # scale_factors = (scale_factors * selector).sum(axis=0)
-        # scale_offsets = (scale_offsets * selector).sum(axis=0)
-        # scale_factors = pl.load(scale_factors_ref, (pl.dslice(i,1), pl.dslice(0), slice(None)))[0]
-        # scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(i,1), pl.dslice(0), slice(None)))[0]
-        
-        # num_blocks = 1
-        # scale_factors = scale_factors.reshape(-1)
-        # scale_offsets = scale_offsets.reshape(-1)
-        # scale_factors = scale_factors.reshape(-1, 1, 1)
-        # scale_offsets = scale_offsets.reshape(-1, 1, 1)
+        selector = jax.lax.broadcasted_iota(jnp.int32, (8, 1), 0) == rem
+        scale_factors = (selector * scale_factors).sum(0)
+        scale_offsets = (selector * scale_offsets).sum(0)
         
         qs1 = qs1.reshape(12, -1)
         
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
         
-        # # 🤡 x2
-        # # qs1 = jnp.stack([qs1[:, i] for i in range(12) for _ in range(32)], -1)
-        # def rep32(x):
-        #     x = jnp.stack([x] * 8, -1)
-        #     x = jnp.concatenate([x] * 4, -1)
-            
-        #     # x = jnp.stack([x, x, x, x], -1)
-        #     # x = jnp.concatenate([x, x, x, x], -1)
-        #     # x = jnp.concatenate([x, x], -1)
-            
-        #     # for _ in range(5):
-        #     #     x = jnp.concatenate([x, x], -1)
-        #     return x
-        
-        # def retile4(start):
-        #     return jnp.stack([qs1[:, i] for i in range(start, start+4) for _ in range(32)], -1)
-        #     # return jnp.concatenate([rep32(qs1[:, i]) for i in range(start, start+4)], -1)
-        # chunk1 = retile4(0)
-        # chunk2 = retile4(4)
-        # chunk3 = retile4(8)
-        
         chunk1 = qs1[:4]
         chunk2 = qs1[4:8]
         chunk3 = qs1[8:]
-        
-        # sl = lambda x, s: jax.lax.shift_left(x, s)
-        # sr = lambda x, s: x >> s
-        # left_scale = qs1[:, 0:4] & 0b111111
-        # left_scale = qs1[:, 0:128] & 0b111111
         left_scale = chunk1 & 0b111111
-        # left_scale = qs1[:, 0:4]
-        # right_scale = (qs1[:, 8:] & 15) | sl((sr(qs1[:, 0:4], 6) % 4), 4)
-        # right_scale = (qs1[:, 8:] & 15) | sl((sr(qs1[:, 0:4], 6) & 0b11), 4)
-        # right_scale = (qs1[:, 256:] & 15) | sl((sr(qs1[:, 0:128], 6) & 0b11), 4)
         right_scale = (chunk3 & 15) | sl((sr(chunk1, 6) & 0b11), 4)
-        # right_scale = qs1[:, 8:]
-        
-        # factor_scale = jnp.concatenate([left_scale, right_scale], axis=1)
-        
-        # left_offset = qs1[:, 4:8] & 0b111111
-        # left_offset = qs1[:, 128:256] & 0b111111
         left_offset = chunk2 & 0b111111
-        # left_offset = qs1[:, 4:8]
-        # right_offset = (sr(qs1[:, 8:], 4)) | sl((sr(qs1[:, 4:8], 6)), 4)
-        # right_offset = (sr(qs1[:, 256:], 4)) | sl((sr(qs1[:, 128:256], 6)), 4)
         right_offset = (sr(chunk3, 4)) | sl((sr(chunk2, 6)), 4)
-        # right_offset = qs1[:, 8:]
-        # offset_scale = jnp.concatenate([left_offset, right_offset], axis=1)
-        
-        # offset_scale = jnp.concatenate([qs1[:, 4:8], qs1[:, 8:]], axis=1)
-        # print(scale_factors.shape, factor_scale.shape)
-
-        # og_shape = factor_scale.shape
-        # # factor_scale = factor_scale.reshape(factor_scale.shape[0], -1)
-        # factors = factor_scale * scale_factors[:, None]
-        # # factors = jax.lax.dot_general(factor_scale.astype(jnp.float32), scale_factors.astype(jnp.float32),
-        # #                     dimension_numbers=(((), ()), ((0,), (0,))),
-        # #                     preferred_element_type=jnp.float32)
-        # factors = factors.reshape(og_shape)
-        
-        # # factors = scale_factors * factor_scale.astype(scale_factors.dtype)
-        # og_shape = offset_scale.shape
-        # # offset_scale = offset_scale.reshape(offset_scale.shape[0], -1)
-        # offsets = offset_scale * scale_offsets[:, None]
-        # offsets = offsets.reshape(og_shape)
-        # # offsets = scale_offsets[:, None, None] * offset_scale.astype(scale_offsets.dtype)
-
-        # qs2 = qs2.reshape(-1, 4, 32)
-        # qs2l = qs2r = qs2
         qs2l = qs2 & 0xf
-        # qs2r = sr(qs2, 4) % 16
         qs2r = sr(qs2, 4) & 0b1111
-        # qs2 = jnp.stack([qs2l.reshape(-1, 4, 32), qs2r.reshape(-1, 4, 32)], axis=2).reshape(-1, 8, 32)
 
         block_inputs = inputs.astype(jnp.float32).reshape(inputs.shape[0], 256)
 
         matrix_chunks = []
         for i in range(2):
             qs2 = (qs2l, qs2r)[i].astype(jnp.float32)
-            # qs2 = qs2.reshape(-1, 4, 32)
-            # qs2 = qs2.T.reshape(4, 32, -1).transpose(2, 0, 1)
-            
-            # matrix = factors * qs2.astype(factors.dtype)
             fact = scale_factors * (left_scale, right_scale)[i]
             off = scale_offsets * (left_offset, right_offset)[i]
-
-            # (128, 4) -> (128, 128) by repetition
-            # retile = lambda x: jnp.tile(x, (1, 32))  # why are all lax implementations insane?! this reshapes to (1, 128, 1, 4)
-            # retile = lambda x: jnp.stack([x] * 32, axis=-1).reshape((128, 128))
-            
-            # retile = lambda x: x
-            # retile = lambda x: jnp.stack([x[:, i] for i in range(4) for _ in range(32)], -1)
             
             for j in range(4):
                 matrix_chunk = fact[j] * qs2[j*32:j*32+32, :] - off[j]
                 matrix_chunks.append(matrix_chunk.astype(jnp.float32))
-                
-                # matrix = matrix_chunk.reshape(32, -1).astype(jnp.float32)
-                # block = tuple(block_inputs[:, k*32:k*32+32] for k in range(8))[i * 4 + j]
-                # result = jax.lax.dot_general(block, matrix,
-                #                             dimension_numbers=(((1,), (0,)), ((), ())),
-                #                             preferred_element_type=jnp.float32,)
-                # accum_ref[...] += result
-                
-            #     matrix_chunks.append(matrix_chunk)
+
         matrix = jnp.concatenate(matrix_chunks, axis=0)
         
         matrix = matrix.reshape(256, -1).astype(jnp.float32)
@@ -348,71 +189,8 @@ def matmul_4bit_kernel(inputs_ref, scale_factors_ref, scale_offsets_ref, qs1_ref
                                     dimension_numbers=(((1,), (0,)), ((), ())),
                                     preferred_element_type=jnp.float32,)
         accum_ref[...] += result
-
-            # matrix = retile(fact) * qs2.astype(fact.dtype)
-            # # matrix = matrix - offsets
-            # # off = (offsets[:, :4], offsets[:, 4:])[i]
-            # matrix = matrix - retile(off)
-            
-            # matrix = matrix.astype(jnp.float32)
-
-            # matrix = matrix.reshape(num_blocks, -1, 128).astype(jnp.bfloat16)
-
-            # matrix = matrix.reshape(-1, 128).astype(jnp.bfloat16)
-            # block = (block_inputs[:, :128], block_inputs[:, 128:])[i]
-            # result = jax.lax.dot_general(block, matrix,
-            #                             dimension_numbers=(((1,), (1,)), ((), ())),
-            #                             preferred_element_type=jnp.float32,)
-            # accum_ref[...] += result
-        
-        # def final_loop(b, _):
-        #     result = jax.lax.dot_general(block_inputs[:, b],
-        #                                  matrix[b],
-        #                                 dimension_numbers=(((1,), (1,)), ((), ())),
-        #                                 preferred_element_type=jnp.float32,)
-        #     accum_ref[...] += result
-        # jax.lax.fori_loop(0, num_blocks, final_loop, init_val=None)
-        # for b in range(matrix.shape[0]):
-        #     result = jax.lax.dot_general(block_inputs[:, b],
-        #                                  matrix[b].astype(jnp.bfloat16),
-        #                                 dimension_numbers=(((1,), (0,)), ((), ())),
-        #                                 preferred_element_type=jnp.float32,)
-        #     accum_ref[...] += result
-
-        # result = jax.lax.dot_general(inputs.astype(jnp.bfloat16).reshape(inputs.shape[0], num_blocks, 256),
-        #                              matrix.astype(jnp.bfloat16),
-        #                              dimension_numbers=(((1, 2), (0, 2)), ((), ())),
-        #                              preferred_element_type=jnp.float32,)
-
-        # accum_ref[...] += result
-    
-        # matrix = matrix.reshape(num_blocks, -1, 256)
-        # # matrix: [num_blocks, block_m, 256]
-        # matrix = matrix.transpose(0, 2, 1).reshape(block_k, block_m)
-        # # matrix = matrix.transpose(1, 0, 2).reshape(block_m, block_k).transpose(1, 0)
-        # # matrix: [block_k, block_m]
-
-        # result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), matrix.astype(jnp.bfloat16),
-        #                              dimension_numbers=(((1,), (0,)), ((), ())),
-        #                              preferred_element_type=jnp.float32,)
-
-        # accum_ref[...] += result
     jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None, unroll=True)
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
-
-    # scale_factors = scale_factors.reshape(num_blocks, 1, 1, -1)
-    # scale_offsets = scale_offsets.reshape(num_blocks, 1, 1, -1)
-    # qs1 = qs1.reshape(num_blocks, 12, 1, -1)
-    # qs2 = qs2.reshape(num_blocks, 4, 32, -1)
-
-    # factors = scale_factors * jnp.concatenate([qs1[:, 0:4] & 0b111111, (qs1[:, 8:] & 15) | ((qs1[:, 0:4] >> 6) << 4)], axis=1)
-    # offsets = scale_offsets * jnp.concatenate([qs1[:, 4:8] & 0b111111, (qs1[:, 8:] >> 4) | ((qs1[:, 4:8] >> 6) << 4)], axis=1)
-    
-    # qs2 = jnp.stack([qs2 & 0xf, qs2 >> 4], axis=2).reshape(num_blocks, 8, 32, -1)
-
-    # matrix = factors * qs2 - offsets
-    # print(matrix.shape)
-    # return inputs @ matrix.reshape(inputs.shape[-1], -1)
 
 def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, out_axis=None):
     is_transpose = [False] * len(tensors) if kernel.__name__ != "matmul_4bit_kernel" else [False, False, False, False]
