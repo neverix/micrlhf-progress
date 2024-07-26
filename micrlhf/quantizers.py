@@ -163,10 +163,10 @@ def matmul_4bit_kernel(inputs_ref,
         chunk2 = qs1[4:8]
         chunk3 = qs1[8:]
         left_scale = chunk1 & 0b111111
-        right_scale = (chunk3 & 15) | sl((sr(chunk1, 6) & 0b11), 4)
+        right_scale = (chunk3 & 0b1111) | sl((sr(chunk1, 6) & 0b11), 4)
         left_offset = chunk2 & 0b111111
         right_offset = (sr(chunk3, 4)) | sl((sr(chunk2, 6)), 4)
-        qs2l = qs2 & 0xf
+        qs2l = qs2 & 0b1111
         qs2r = sr(qs2, 4) & 0b1111
 
         block_inputs = inputs.astype(jnp.float32).reshape(inputs.shape[0], 256)
@@ -176,9 +176,9 @@ def matmul_4bit_kernel(inputs_ref,
             qs2 = (qs2l, qs2r)[i].astype(jnp.float32)
             fact = scale_factors * (left_scale, right_scale)[i]
             off = scale_offsets * (left_offset, right_offset)[i]
-            
+
             for j in range(4):
-                matrix_chunk = fact[j] * qs2[j*32:j*32+32, :] - off[j]
+                matrix_chunk = fact[j] * qs2[j*32:j*32+32] - off[j]
                 matrix_chunks.append(matrix_chunk.astype(jnp.float32))
 
         matrix = jnp.concatenate(matrix_chunks, axis=0)

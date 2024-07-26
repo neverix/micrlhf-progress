@@ -85,5 +85,5 @@ Install pprof:
 
 ```
 go install github.com/google/pprof@latest
-echo '\n\nexport PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 ```
