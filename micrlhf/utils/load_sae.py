@@ -120,7 +120,7 @@ def weights_to_resid(weights, sae):
         recon = recon / sae["out_norm_factor"]
 
     # recon = recon.astype('bfloat16')
-    return recon
+    return recon.astype(weights.dtype)
 
 def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None):
     inputs = vector
