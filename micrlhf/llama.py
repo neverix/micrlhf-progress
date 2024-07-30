@@ -31,6 +31,25 @@ class LlamaConfig:
     activation_dtype: jax.typing.DTypeLike = jnp.float16
     act_fn: Literal["gelu", "silu"] = "silu"
     resid_rescale: float = 1.0
+    attn_soft_cap: Optional[float] = None
+    final_soft_cap: Optional[float] = None
+    attn_scale_dim: Optional[int] = None
+    pre_post_ln: bool = False
+
+
+@pz.pytree_dataclass
+class SoftCap(pz.Layer):
+    soft_cap: float
+
+    @pz.checked_layer_call
+    def __call__(self, x: pz.nx.NamedArray) -> pz.nx.NamedArray:
+        return self.soft_cap * jnp.tanh(x / self.soft_cap)
+
+    def input_structure(self) -> pz.chk.StructureAnnotation:
+        return pz.chk.Wildcard("x")
+
+    def output_structure(self) -> pz.chk.StructureAnnotation:
+        return pz.chk.Wildcard("x")
 
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
@@ -90,6 +109,7 @@ class LlamaAttention(pz.nn.Attention):
     num_heads = num_kv_heads
     hidden_size = config.hidden_size
     projection_dim = config.head_dim
+    attn_scale_dim = projection_dim if config.attn_scale_dim is None else config.attn_scale_dim
 
     return cls(
         input_to_query=pz.nn.Sequential([
@@ -111,7 +131,7 @@ class LlamaAttention(pz.nn.Attention):
             ),
             pz.nn.ConstantRescale(
                 by=jnp.array(
-                    projection_dim**-0.5, dtype=config.activation_dtype
+                    attn_scale_dim**-0.5, dtype=config.activation_dtype
                 )
             ),
         ]),
@@ -155,6 +175,7 @@ class LlamaAttention(pz.nn.Attention):
                 ),
                 {"seq": "tq", "kv_heads": "h", "q_rep": "r", "kv_seq": "tkv"},
             ),
+        ] + ([SoftCap(config.attn_soft_cap)] if config.attn_soft_cap is not None else []) + [
             pz.nn.ApplyAttentionMask.from_config(
                 mask_tag="attn_mask",
                 masked_out_value=jnp.array(
@@ -206,7 +227,13 @@ class LlamaBlock(pz.nn.Sequential):
                 pz.nn.add_parameter_prefix(
                     "attn", LlamaAttention.from_config(config),
                 ),
-            ])),
+            ] + ([pz.nn.add_parameter_prefix(
+                "post_attn_norm",
+                pz.nn.RMSLayerNorm.from_config(
+                    across_axes={"embedding": config.hidden_size},
+                    dtype=config.parameter_dtype,
+                ),
+            )] if config.pre_post_ln else []))),
             ConstrainedSharding.from_config(),
             pz.nn.Residual(pz.nn.Sequential([
                 pz.nn.add_parameter_prefix(
@@ -220,7 +247,13 @@ class LlamaBlock(pz.nn.Sequential):
                 pz.nn.add_parameter_prefix(
                     "mlp", LlamaMLP.from_config(config),
                 ),
-            ])),
+            ] + ([pz.nn.add_parameter_prefix(
+                "post_mlp_norm",
+                pz.nn.RMSLayerNorm.from_config(
+                    across_axes={"embedding": config.hidden_size},
+                    dtype=config.parameter_dtype,
+                ),
+            )] if config.pre_post_ln else []))),
             ConstrainedSharding.from_config(),
         ])
 
@@ -307,11 +340,12 @@ class LlamaTransformer(pz.Layer):
                             )
                         )
                     )
-                ]),
-                tags=["positions", "attn_mask"],
+                ] + ([pz.nn.SoftCap(config.final_soft_cap)] if config.final_soft_cap is not None else []),
             ),
-            mesh=mesh,
-        )
+            tags=["positions", "attn_mask"],
+        ),
+        mesh=mesh,
+    )
 
     @property
     def axis_name_to_mesh_name(self):
@@ -373,7 +407,12 @@ class LlamaTransformer(pz.Layer):
             config.resid_rescale = jnp.sqrt(config.hidden_size).astype(config.activation_dtype)
         if "llama.attention.key_length" in gguf.metadata and "llama.attention.value_length" in gguf.metadata:
             assert gguf.metadata["llama.attention.key_length"] == gguf.metadata["llama.attention.value_length"], "Different key and value lengths not supported"
-        config.head_dim = gguf.metadata.get("llama.attention.key_length", gguf.metadata["llama.embedding_length"] // gguf.metadata["llama.attention.head_count"])
+        scale_dim = gguf.metadata["llama.embedding_length"] // gguf.metadata["llama.attention.head_count"]
+        if from_type == "gemma2":
+            config.attn_scale_dim = scale_dim
+            config.attn_soft_cap = gguf.metadata.get("attn_logit_softcapping")
+            config.final_soft_cap = gguf.metadata.get("final_logit_softcapping")
+        config.head_dim = gguf.metadata.get("llama.attention.key_length", scale_dim)
 
         transformer = cls.from_config(config, mesh=mesh)
         transformer = transformer.handle_sharding()
@@ -399,6 +438,11 @@ class LlamaTransformer(pz.Layer):
             "final_norm.scale.weights": "output_norm.weight",
             "unembed.embeddings": {None: "output.weight", "gemma": "token_embd.weight", "gemma2": "token_embd.weight"}[from_type],
         }
+        for i in range(config.num_layers):
+            if f"blk.{i}.post_attention_norm.weight" in gguf.keys():
+                param_mapping[f"blocks.{i}.post_attn_norm.scale.weights"] = f"blk.{i}.post_attention_norm.weight"
+            if f"blk.{i}.post_ffw_norm.weight" in gguf.keys():
+                param_mapping[f"blocks.{i}.post_mlp_norm.scale.weights"] = f"blk.{i}.post_ffw_norm.weight"
         is_transposed = {k: False for k in param_mapping}
 
         if transpose_rotary is None:
