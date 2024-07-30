@@ -2,6 +2,7 @@
 import dataclasses
 import itertools
 import os
+from argparse import Namespace
 from typing import Iterable, Literal, Optional
 
 import equinox as eqx
@@ -30,10 +31,6 @@ class LlamaConfig:
     activation_dtype: jax.typing.DTypeLike = jnp.float16
     act_fn: Literal["gelu", "silu"] = "silu"
     resid_rescale: float = 1.0
-
-    @property
-    def projection_dim(self):
-        return self.hidden_size // self.num_attention_heads
 
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
@@ -358,23 +355,26 @@ class LlamaTransformer(pz.Layer):
         mesh = cls.make_mesh(device_map)
         
         gguf = read_gguf(gguf_path)
-        if from_type == "gemma":
-            gguf.replace_metadata_prefix("gemma.", "llama.")
+        is_gemma = from_type.startswith("gemma")
+        if is_gemma:
+            gguf.replace_metadata_prefix(f"{from_type}.", "llama.")
         config = LlamaConfig(
-            vocab_size=gguf.metadata.get("llama.vocab_size", {None: 32_000, "gemma": 256_000}[from_type]),
+            vocab_size=gguf.metadata.get("llama.vocab_size", {None: 32_000, "gemma": 256_000, "gemma2": 256_000}[from_type]),
             hidden_size=gguf.metadata["llama.embedding_length"],
             intermediate_size=gguf.metadata["llama.feed_forward_length"],
             num_layers=gguf.metadata["llama.block_count"],
             num_attention_heads=gguf.metadata["llama.attention.head_count"],
             num_key_value_heads=gguf.metadata["llama.attention.head_count_kv"],
-            act_fn={None: "silu", "gemma": "gelu"}[from_type],
+            act_fn={None: "silu", "gemma": "gelu", "gemma2": "gelu"}[from_type],
         )
-        if from_type == "gemma":
-            config.resid_rescale = jnp.sqrt(config.hidden_size).astype(config.activation_dtype)
-        config.head_dim = gguf.metadata["llama.embedding_length"] // gguf.metadata["llama.attention.head_count"]
         config.parameter_dtype = jnp.bfloat16
-        config.activation_dtype = jnp.bfloat16  # anything for the TPU bf
-        
+        config.activation_dtype = jnp.bfloat16  # 🤡
+        if is_gemma:
+            config.resid_rescale = jnp.sqrt(config.hidden_size).astype(config.activation_dtype)
+        if "llama.attention.key_length" in gguf.metadata and "llama.attention.value_length" in gguf.metadata:
+            assert gguf.metadata["llama.attention.key_length"] == gguf.metadata["llama.attention.value_length"], "Different key and value lengths not supported"
+        config.head_dim = gguf.metadata.get("llama.attention.key_length", gguf.metadata["llama.embedding_length"] // gguf.metadata["llama.attention.head_count"])
+
         transformer = cls.from_config(config, mesh=mesh)
         transformer = transformer.handle_sharding()
         
@@ -397,12 +397,12 @@ class LlamaTransformer(pz.Layer):
             **{f"blocks.{i}.mlp.up_proj.weights": f"blk.{i}.ffn_up.weight" for i in range(config.num_layers)},
             **{f"blocks.{i}.mlp.out_proj.weights": f"blk.{i}.ffn_down.weight" for i in range(config.num_layers)},
             "final_norm.scale.weights": "output_norm.weight",
-            "unembed.embeddings": {None: "output.weight", "gemma": "token_embd.weight"}[from_type],
+            "unembed.embeddings": {None: "output.weight", "gemma": "token_embd.weight", "gemma2": "token_embd.weight"}[from_type],
         }
         is_transposed = {k: False for k in param_mapping}
 
         if transpose_rotary is None:
-            transpose_rotary = from_type != "gemma"
+            transpose_rotary = not is_gemma
         if not load_eager:
             # assume no linears are transposed
             transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
