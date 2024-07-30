@@ -414,16 +414,6 @@ class LlamaTransformer(pz.Layer):
             config.final_soft_cap = gguf.metadata.get("final_logit_softcapping")
         config.head_dim = gguf.metadata.get("llama.attention.key_length", scale_dim)
 
-        transformer = cls.from_config(config, mesh=mesh)
-        transformer = transformer.handle_sharding()
-        
-        if extract_layer is not None:
-            assert isinstance(extract_layer, int)
-            transformer = transformer.select().at_instances_of(LlamaBlock).apply_with_selected_index(
-                lambda i, x: x if i < extract_layer else pz.nn.Identity()
-            )
-            transformer = transformer.select().at_instances_of(pz.nn.EmbeddingDecode).apply(lambda _: pz.nn.Identity())
-
         param_mapping = {
             "embed.embeddings": "token_embd.weight",
             **{f"blocks.{i}.pre_attn_norm.scale.weights": f"blk.{i}.attn_norm.weight" for i in range(config.num_layers)},
@@ -440,36 +430,50 @@ class LlamaTransformer(pz.Layer):
         }
         for i in range(config.num_layers):
             if f"blk.{i}.post_attention_norm.weight" in gguf.keys():
+                config.pre_post_ln = True
                 param_mapping[f"blocks.{i}.post_attn_norm.scale.weights"] = f"blk.{i}.post_attention_norm.weight"
             if f"blk.{i}.post_ffw_norm.weight" in gguf.keys():
+                config.pre_post_ln = True
                 param_mapping[f"blocks.{i}.post_mlp_norm.scale.weights"] = f"blk.{i}.post_ffw_norm.weight"
+
         missing_keys = set(param_mapping.values()) - set(gguf.keys())
         if missing_keys:
             raise ValueError(f"Missing keys: {missing_keys}")
         is_transposed = {k: False for k in param_mapping}
 
+        transformer = cls.from_config(config, mesh=mesh)
+        transformer = transformer.handle_sharding()
+        
+        if extract_layer is not None:
+            assert isinstance(extract_layer, int)
+            transformer = transformer.select().at_instances_of(LlamaBlock).apply_with_selected_index(
+                lambda i, x: x if i < extract_layer else pz.nn.Identity()
+            )
+            transformer = transformer.select().at_instances_of(pz.nn.EmbeddingDecode).apply(lambda _: pz.nn.Identity())
+
         if transpose_rotary is None:
             transpose_rotary = not is_gemma
-        missing_keys = set(gguf.keys())
-        def remove_missing_key(k):
-            missing_keys.remove(k)
+        unused_keys = set(gguf.keys())
+        def remove_unused_key(k):
+            if k in unused_keys:
+                unused_keys.remove(k)
             return k
         if not load_eager:
             # assume no linears are transposed
             transformer = transformer.select().at_instances_of(pz.nn.Linear).apply(
-                lambda linear: make_linear(linear, *gguf[remove_missing_key(param_mapping[
+                lambda linear: make_linear(linear, *gguf[remove_unused_key(param_mapping[
                     linear.select().at_instances_of(pz.nn.UninitializedParameter).pick_nth_selected(0).get().name
                     ])], mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name,
                                            transpose_rotary=transpose_rotary, load_on_cpu=load_on_cpu)
             )
         transformer = transformer.select().at_instances_of(pz.nn.UninitializedParameter).apply(
-            lambda param: make_param(param, *gguf[remove_missing_key(param_mapping[param.name])],
+            lambda param: make_param(param, *gguf[remove_unused_key(param_mapping[param.name])],
                                      mesh=mesh, axis_name_to_mesh_name=transformer.axis_name_to_mesh_name,
                                      is_transposed=is_transposed[param.name],
                                      transpose_rotary=transpose_rotary, load_on_cpu=load_on_cpu)
         )
-        if missing_keys:
-            raise ValueError(f"Missing keys: {missing_keys}")
+        if unused_keys:
+            raise ValueError(f"Unused keys: {unused_keys}")
 
         return transformer
 
