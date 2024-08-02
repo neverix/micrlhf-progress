@@ -12,8 +12,8 @@ packages = [
 python = "^3.10"
 sentencepiece = "^0.2.0"
 penzai = "^0.1.0"
-jax = {version = "=0.4.31.dev20240729", extras = ["tpu"]}
-jaxlib = {version = "=0.4.31.dev20240729"}
+jax = {version = "=0.4.31", extras = ["tpu"]}
+jaxlib = {version = "=0.4.31"}
 tiktoken = "^0.6.0"
 tqdm = "^4.66.2"
 datasets = "^2.19.1"
