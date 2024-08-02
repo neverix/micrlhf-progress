@@ -364,6 +364,8 @@ class FeatureSearch:
 
         recon = jnp.einsum("fv,f->v", self.sae["W_dec"], weights)
 
+        recon = recon + self.sae["b_dec"]
+
         if "out_norm_factor" in self.sae:
             recon = recon / self.sae["out_norm_factor"]
 
