@@ -5,6 +5,7 @@ from micrlhf.llama import LlamaBlock, LlamaAttention, LlamaInputs
 from micrlhf.utils.activation_manipulation import ActivationAddition, wrap_vector
 from functools import partial
 import jax.numpy as jnp
+from collections import OrderedDict
 from penzai import pz
 import numpy as np
 import jax
@@ -173,12 +174,12 @@ class Circuitizer(eqx.Module):
         print("Setting up masks...")
         prompt_length = len(tokenizer.tokenize(prompt))
         periods = ["input", "arrow", "output", "newline"]
-        self.masks = {
-            "prompt": jnp.zeros_like(self.train_tokens).at[:, :prompt_length].set(1).astype(bool),
-            **{
-                period: jnp.zeros_like(self.train_tokens).at[:, prompt_length+i::len(periods)].set(1).astype(bool) * (self.train_tokens != pad) for i, period in enumerate(periods)
-            }
-        }
+        self.masks = OrderedDict([
+            ("prompt", jnp.zeros_like(self.train_tokens).at[:, :prompt_length].set(1).astype(bool)),
+            *[
+                (period, jnp.zeros_like(self.train_tokens).at[:, prompt_length+i::len(periods)].set(1).astype(bool) * (self.train_tokens != pad)) for i, period in enumerate(periods)
+            ]
+        ])
 
         print("Running metrics...")
         self.run_metrics()
@@ -462,7 +463,10 @@ class Circuitizer(eqx.Module):
     # float((ie_pre_to_pre_features(6, grad_pre[6], "arrow") - mask_average(ie_error_resid[6], "arrow")).sum())
 
     def mask_average(self, vector, mask):
-        mask = self.masks[mask]
+        if isinstance(mask, jax.Array):
+            mask = jax.lax.select_n(mask, *self.masks.values())
+        else:
+            mask = self.masks[mask]
         while mask.ndim < vector.ndim:
             mask = mask[..., None]
 
@@ -542,20 +546,20 @@ class Circuitizer(eqx.Module):
                 if ablate_resids:
                     try:
                         resid = saes[(layer, "resid")]
-                        mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold)
+                        mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold, topk)
                         block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, self.masks), x]))
                     except KeyError:
                         pass
                 try:
                     attn_out = saes[(layer, "attn_out")]
-                    mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold)
+                    mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk)
                     block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, self.masks)]))
                 except KeyError:
                     pass
 
                 try:
                     transcoder = saes[(layer, "transcoder")]
-                    mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold)
+                    mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk)
                     block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, self.masks, x))
                 except KeyError:
                     pass
@@ -565,13 +569,85 @@ class Circuitizer(eqx.Module):
             llama_ablated = block_selection.apply(converter)
         return self.ablated_metric(llama_ablated), n_nodes[0]
 
-    def run_ablated_metrics(self):
-        thresholds = np.linspace(1e-7, 1e-5, 100)
+    def run_ablated_metrics(self, thresholds, topks=None):
         n_nodes_counts = []
         ablated_metrics = []
-        for threshold in tqdm(thresholds):
-            abl_met, n_nodes = self.ablate_nodes(threshold, ablate_resids=True)
-            ablated_metrics.append(float(abl_met))
-            n_nodes_counts.append(int(n_nodes))
 
-        return thresholds, ablated_metrics, n_nodes_counts
+        if topks is not None:
+            for topk in topks:
+                abl_met, n_nodes = self.ablate_nodes(0, ablate_resids=True, topk=topk)
+                ablated_metrics.append(float(abl_met))
+                n_nodes_counts.append(int(n_nodes))
+        else:
+            for threshold in tqdm(thresholds):
+                abl_met, n_nodes = self.ablate_nodes(threshold, ablate_resids=True, topk=topk)
+                ablated_metrics.append(float(abl_met))
+                n_nodes_counts.append(int(n_nodes))
+
+        return ablated_metrics, n_nodes_counts
+
+    from tqdm import tqdm, trange
+
+    @eqx.filter_jit
+    def compute_feature_effects(
+        self,
+        feature_type,
+        layer,
+        feature_idx,
+        mask,
+        layer_window=1,
+    ):
+        match feature_type:
+            case "r":
+                resid_grad = self.pre_feature_to_pre(layer, feature_idx, mask)
+            case "t":
+                resid_grad = self.transcoder_feature_to_mid(layer, feature_idx, mask)
+            case "a":
+                resid_grad = self.attn_out_feature_to_pre(layer, feature_idx, mask)
+            case "er":
+                resid_grad = self.pre_error_to_pre(layer, mask)
+            case "et":
+                resid_grad = self.transcoder_error_to_mid(layer, mask)
+            case "ea":
+                resid_grad = self.attn_out_error_to_pre(layer, mask)
+        feature_effects = {}
+        for l in range(layer, max(5, layer - (1 if feature_type in ("r", "er") else 0) - layer_window), -1):
+            if l < layer:
+                for mask in self.masks:
+                    feature_effects[("t", l, mask)] = self.ie_pre_to_transcoder_features(l, resid_grad, mask)
+                    feature_effects[("et", l, mask)] = self.ie_pre_to_transcoder_error(l, resid_grad, mask)
+            # # does not work # resid_grad = resid_grad - grad_through_mlp(layer, resid_grad)
+            # resid_grad = resid_grad + grad_through_mlp(layer, resid_grad)
+            if l < layer or feature_type in ("t", "et"):
+                for mask in self.masks:
+                    feature_effects[("a", l, mask)] = self.ie_mid_to_attn_features(l, resid_grad, mask)
+                    feature_effects[("ea", l, mask)] = self.ie_mid_to_attn_error(l, resid_grad, mask)
+            # # does not work # resid_grad = resid_grad - grad_through_attn(layer, resid_grad)
+            # resid_grad = resid_grad + grad_through_attn(layer, resid_grad)
+            if l < layer or feature_type in ("t", "et", "a", "ea"):
+                for mask in self.masks:
+                    feature_effects[("r", l, mask)] = self.ie_pre_to_pre_features(l, resid_grad, mask)
+                    feature_effects[("er", l, mask)] = self.ie_pre_to_pre_error(l, resid_grad, mask)
+        return feature_effects
+
+    def compute_edges(
+        self,
+        feature_type,
+        layer,
+        feature_idx,
+        mask,
+        abs_effects = False,
+        k = 32,
+        layer_window=1,
+    ):
+        feature_effects = self.compute_feature_effects(feature_type, layer, feature_idx, mask, layer_window=layer_window)
+        top_effects = []
+        for key, features in feature_effects.items():
+            if features.ndim == 0:
+                top_effects.append((float(features), key, 0))
+                continue
+            effects, indices = jax.lax.top_k(features if not abs_effects else jnp.abs(features), k)
+            for i, e in zip(indices.tolist(), effects.tolist()):
+                top_effects.append((e, key, i))
+        top_effects.sort(reverse=True)
+        return top_effects[:k]
