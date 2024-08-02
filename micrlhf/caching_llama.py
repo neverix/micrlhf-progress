@@ -171,9 +171,9 @@ class LlamaKVCachingTransformer(pz.Layer):
         """
         cached_axes = {
                 **batch_axes,
-                "projection": uncached.config.projection_dim,
+                "projection": uncached.config.head_dim,
+                "kv_heads": uncached.config.num_key_value_heads,
         }
-        cached_axes["kv_heads"] = uncached.config.num_key_value_heads
         caching_body = (
                 pz.select(uncached.body)
                 .at_instances_of(LlamaAttention)

@@ -126,9 +126,9 @@ def weights_to_resid(weights, sae):
         recon = recon * sae["out_norm_factor"]
 
     # recon = recon.astype('bfloat16')
-    return recon
+    return recon.astype(weights.dtype)
 
-def sae_encode_gated(sae, vector, ablate_features=None):
+def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None):
     inputs = vector
 
     if "norm_factor" in sae:
@@ -139,6 +139,13 @@ def sae_encode_gated(sae, vector, ablate_features=None):
     post_relu = jax.nn.relu(pre_relu)
     
     post_relu = (post_relu > 0) * jax.nn.relu((inputs @ sae["W_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
+
+    if keep_features is not None:
+        post_relu = post_relu * keep_features
+        # axes = tuple(range(post_relu.ndim - 1))
+        
+        # post_relu = jax.vmap(jax.vmap(lambda a, b: a.at[keep_features].set(b[keep_features]), in_axes=(0, 0), out_axes=0),
+        #                      in_axes=(0, 0), out_axes=0)(jnp.zeros_like(post_relu), post_relu)
 
     if ablate_features is not None:
         post_relu = post_relu.at[ablate_features].set(0)
