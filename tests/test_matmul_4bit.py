@@ -27,6 +27,7 @@ def matmul_4bit(inputs, scale_factors, scale_offsets, qs1, qs2, use_int8=False):
 
     matrix = factors * qs2 - offsets
     matrix = matrix.reshape(num_blocks, -1, 256).transpose(0, 2, 1)
+    print({k: (v.shape if hasattr(v, "shape") else None) for k, v in locals().items()})
     return inputs @ matrix.reshape(inputs.shape[-1], -1)
 
 def gen_4bit_mat():

@@ -1,6 +1,7 @@
 import os
 
 import jax
+import jax.numpy as jnp
 import shutil
 from huggingface_hub import HfFileSystem
 from safetensors.flax import load_file, save_file
@@ -49,7 +50,7 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
     if key in sae_cache:
         return sae_cache[key]
     fs = HfFileSystem()
-    weights = fs.glob(f"nev/gemma-2b-saex-test/it-l{layer}-{label}-test-run-{revision}-*/*.safetensors")
+    weights = fs.glob(f"nev/gemma-2b-saex-test/it-l{layer}-{label}-test-run-{revision}-*/*.safetensors", revision="9e8944d087c755c4ead1f78ee0e9d8fd6b71187e")
     weight = sorted(weights)[idx]
     sparsity = float("-".join(weight.split("/")[2].split("-")[6:]))
     os.makedirs("models/sae", exist_ok=True)
@@ -57,7 +58,11 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
     w = "/".join(weight.split("/")[2:])
     fname_16 = name_bf16(fname)
     if not os.path.exists(fname_16):
-        os.system(f'wget -c "https://huggingface.co/nev/gemma-2b-saex-test/resolve/main/{w}?download=true" -O "{fname}"')
+        with open(fname, "wb") as f:
+            with fs.open(f"nev/gemma-2b-saex-test/{w}", "rb", revision="9e8944d087c755c4ead1f78ee0e9d8fd6b71187e") as f2:
+                f.write(f2.read())
+
+        # os.system(f'wget -c "https://huggingface.co/nev/gemma-2b-saex-test/resolve/9e8944d087c755c4ead1f78ee0e9d8fd6b71187e/{w}?download=true" -O "{fname}"')
         convert_to_bf16(fname, fname_16)
     fname = fname_16
     sae_weights = load_file(fname)
@@ -66,6 +71,10 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
     if "mean_norm" in sae_weights:
         norm_factor = (sae_weights["W_enc"].shape[0] ** 0.5) / sae_weights["mean_norm"]
         sae_weights["norm_factor"] = norm_factor
+        if "tgt_mean_norm" in sae_weights:
+            sae_weights["out_norm_factor"] = (sae_weights["W_enc"].shape[0] ** 0.5) / sae_weights["tgt_mean_norm"]
+        else:
+            sae_weights["out_norm_factor"] = norm_factor
 
     return sae_weights
 
@@ -89,7 +98,7 @@ def sae_encode(sae, vector):
     decoded = post_relu @ sae["W_dec"] + sae["b_dec"]
     return pre_relu, post_relu, decoded
 
-def sae_encode_gated(sae, vector, ablate_features=None):
+def resids_to_weights(vector, sae):
     inputs = vector
 
     if "norm_factor" in sae:
@@ -101,14 +110,52 @@ def sae_encode_gated(sae, vector, ablate_features=None):
     
     post_relu = (post_relu > 0) * jax.nn.relu((inputs @ sae["W_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
 
+    return post_relu
+
+def weights_to_resid(weights, sae):
+    if "s_gate" in sae:
+        weights = (weights > 0) * jax.nn.relu(weights * jax.nn.softplus(sae["s_gate"]) * sae.get("scaling_factor", 1.0) + sae["b_gate"])   
+    else:
+        weights = jax.nn.relu(weights)
+
+    recon = jnp.einsum("fv,bsf->bsv", sae["W_dec"], weights)
+
+    recon = recon + sae["b_dec"]
+
+    if "out_norm_factor" in sae:
+        recon = recon * sae["out_norm_factor"]
+
+    # recon = recon.astype('bfloat16')
+    return recon.astype(weights.dtype)
+
+def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None):
+    inputs = vector
+
+    if "norm_factor" in sae:
+        inputs = inputs * sae["norm_factor"]
+
+    pre_relu = inputs @ sae["W_enc"]
+    pre_relu = pre_relu +sae["b_enc"]
+    post_relu = jax.nn.relu(pre_relu)
+    
+    post_relu = (post_relu > 0) * jax.nn.relu((inputs @ sae["W_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
+
+    if keep_features is not None:
+        post_relu = post_relu * keep_features
+        # axes = tuple(range(post_relu.ndim - 1))
+        
+        # post_relu = jax.vmap(jax.vmap(lambda a, b: a.at[keep_features].set(b[keep_features]), in_axes=(0, 0), out_axes=0),
+        #                      in_axes=(0, 0), out_axes=0)(jnp.zeros_like(post_relu), post_relu)
+
     if ablate_features is not None:
         post_relu = post_relu.at[ablate_features].set(0)
 
     recon = post_relu @ sae["W_dec"]
-    if "norm_factor" in sae:
-        recon = recon / sae["norm_factor"]
 
     recon = recon + sae["b_dec"]
+    
+    if "out_norm_factor" in sae:
+        recon = recon / sae["out_norm_factor"]
 
     return pre_relu, post_relu, recon
 
