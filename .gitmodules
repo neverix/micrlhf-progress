@@ -1,0 +1,3 @@
+[submodule "splatmul"]
+	path = splatmul
+	url = https://github.com/neverix/splatmul
