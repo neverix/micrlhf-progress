@@ -215,7 +215,16 @@ def logprob_loss(logits, tokens, sep=1599, pad_token=32000, n_first=None, shift=
 def make_act_adder(llama, tv, tokens, layer, length=1, sep=1599, shift=0):
     mask = tokens == sep
 
-    positions = jnp.argwhere(mask)[:, -1]
+    col_indices = jnp.arange(mask.shape[1])
+
+    col_indices_broadcasted = mask * col_indices
+
+    sorted_indices = jnp.sort(col_indices_broadcasted, axis=1, descending=True)
+
+    k = jnp.sum(mask[0]).astype(int)
+
+    positions = sorted_indices[:, :k]
+
     positions = jnp.column_stack(
         tuple(
             positions + i + shift
