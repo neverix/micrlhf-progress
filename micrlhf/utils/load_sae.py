@@ -50,7 +50,7 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
     if key in sae_cache:
         return sae_cache[key]
     fs = HfFileSystem()
-    weights = fs.glob(f"nev/gemma-2b-saex-test/it-l{layer}-{label}-test-run-{revision}-*/*.safetensors", revision="9e8944d087c755c4ead1f78ee0e9d8fd6b71187e")
+    weights = fs.glob(f"nev/gemma-2b-saex-test/it-l{layer}-{label}-test-run-{revision}-*/*.safetensors")
     weight = sorted(weights)[idx]
     sparsity = float("-".join(weight.split("/")[2].split("-")[6:]))
     os.makedirs("models/sae", exist_ok=True)
@@ -59,7 +59,7 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
     fname_16 = name_bf16(fname)
     if not os.path.exists(fname_16):
         with open(fname, "wb") as f:
-            with fs.open(f"nev/gemma-2b-saex-test/{w}", "rb", revision="9e8944d087c755c4ead1f78ee0e9d8fd6b71187e") as f2:
+            with fs.open(f"nev/gemma-2b-saex-test/{w}", "rb") as f2:
                 f.write(f2.read())
 
         # os.system(f'wget -c "https://huggingface.co/nev/gemma-2b-saex-test/resolve/9e8944d087c755c4ead1f78ee0e9d8fd6b71187e/{w}?download=true" -O "{fname}"')
