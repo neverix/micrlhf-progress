@@ -1,5 +1,5 @@
 # What is this
-This is a library that contains a standard implementation of LLaMA in [Penzai](https://github.com/google-deepmind/penzai). So far, the library can load LLaMA with 8-bit quantization from GGUF files and run them without special kernels. In the future, I am planning to implement Paged attention as well as kernels for 4-bit and 6-bit quantized inference.
+This is a library that contains a standard implementation of LLaMA in [Penzai](https://github.com/google-deepmind/penzai). So far, the library can load LLaMA with 8-bit quantization from GGUF files and run them. In the future, I am planning to implement Paged Attention as well as kernels for 4-bit and 6-bit quantized inference.
 
 # Installation
 
@@ -17,7 +17,7 @@ pyenv shell 3.12.0
 Install dependencies
 
 ```
-poetry instal
+poetry install
 ```
 
 ## Download models
