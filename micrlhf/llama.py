@@ -389,7 +389,7 @@ class LlamaTransformer(pz.Layer):
         mesh = cls.make_mesh(device_map)
         
         gguf = read_gguf(gguf_path)
-        is_gemma = from_type.startswith("gemma")
+        is_gemma = (from_type is not None) and from_type.startswith("gemma")
         if is_gemma:
             gguf.replace_metadata_prefix(f"{from_type}.", "llama.")
         config = LlamaConfig(
