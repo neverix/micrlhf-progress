@@ -112,8 +112,8 @@ def matmul_8bit_kernel(inputs_ref, quants_ref, scale_ref, outputs_ref, accum_ref
         scale = pl.load(scale_ref,
                         (pl.dslice(i * block_group, block_group),
                         slice(None), slice(None)))
-        scale = jnp.broadcast_to(scale.astype(jnp.float32), quants.shape)
-        scaled = scale.reshape(block_k, block_m) * quants.reshape(block_k, block_m)
+        scale = scale.astype(jnp.float32)
+        scaled = (scale * quants).reshape(block_k, block_m)
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
         result = jax.lax.dot_general(inputs.astype(jnp.bfloat16), scaled.astype(jnp.bfloat16),
                                     dimension_numbers=(((1,), (0,)), ((), ())),
