@@ -146,15 +146,20 @@ def matmul_4bit_kernel(inputs_ref,
     def matmul_loop(i, _):
         qs1 = pl.load(qs1_ref, (i, slice(None), slice(None))).astype(jnp.int32)
         qs2 = pl.load(qs2_ref, (i, slice(None), slice(None))).astype(jnp.int32)
-        
-        quot, rem = jax.lax.div(i, load_slice), jax.lax.rem(i, load_slice)
-        scale_factors = pl.load(scale_factors_ref, (pl.dslice(quot, load_slice), 0, slice(None))).astype(jnp.float32)
-        scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(quot, load_slice), 0, slice(None))).astype(jnp.float32)
 
-        selector = jax.lax.broadcasted_iota(jnp.int32, (8, 1), 0) == rem
+        # quot, rem = jax.lax.div(i, load_slice), jax.lax.rem(i, load_slice)
+        quot, rem = i // load_slice, i % load_slice
+        scale_factors = pl.load(scale_factors_ref, (pl.dslice(quot, load_slice), slice(None), slice(None)))
+        scale_factors = scale_factors.reshape(scale_factors.shape[0], scale_factors.shape[2])
+        scale_factors = scale_factors.astype(jnp.float32)
+        scale_offsets = pl.load(scale_offsets_ref, (pl.dslice(quot, load_slice), slice(None), slice(None)))
+        scale_offsets = scale_offsets.reshape(scale_offsets.shape[0], scale_offsets.shape[2])
+        scale_offsets = scale_offsets.astype(jnp.float32)
+
+        selector = jax.lax.broadcasted_iota(jnp.int32, (load_slice, 1), 0) == jnp.full((load_slice, scale_factors.shape[-1]), rem)
         scale_factors = (selector * scale_factors).sum(0)
         scale_offsets = (selector * scale_offsets).sum(0)
-        
+
         qs1 = qs1.reshape(12, -1)
         
         inputs = pl.load(inputs_ref, (slice(None), pl.dslice(i*block_k, block_k)))
@@ -169,16 +174,16 @@ def matmul_4bit_kernel(inputs_ref,
         qs2l = qs2 & 0b1111
         qs2r = sr(qs2, 4) & 0b1111
 
-        block_inputs = inputs.astype(jnp.float32).reshape(inputs.shape[0], 256)
+        block_inputs = inputs.astype(jnp.float32)
 
         matrix_chunks = []
         for i in range(2):
-            qs2 = (qs2l, qs2r)[i].astype(jnp.float32)
-            fact = scale_factors * (left_scale, right_scale)[i]
-            off = scale_offsets * (left_offset, right_offset)[i]
+            qs2 = (qs2l, qs2r)[i]
 
             for j in range(4):
-                matrix_chunk = fact[j] * qs2[j*32:j*32+32] - off[j]
+                fact = scale_factors[j] * (left_scale, right_scale)[i]
+                off = scale_offsets[j] * (left_offset, right_offset)[i]
+                matrix_chunk = fact[j] * qs2[j*32:j*32+32].astype(jnp.float32) - off[j]
                 matrix_chunks.append(matrix_chunk.astype(jnp.float32))
 
         matrix = jnp.concatenate(matrix_chunks, axis=0)
@@ -189,7 +194,9 @@ def matmul_4bit_kernel(inputs_ref,
                                     dimension_numbers=(((1,), (0,)), ((), ())),
                                     preferred_element_type=jnp.float32,)
         accum_ref[...] += result
-    jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None, unroll=True)
+    for i in range(loop_iterations):
+        matmul_loop(i, None)
+    # jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None, unroll=True)
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, out_axis=None):
