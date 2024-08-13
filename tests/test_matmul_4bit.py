@@ -38,15 +38,15 @@ def matmul_4bit(inputs, scale_factors, scale_offsets, qs1, qs2, based=False):
     # else:
     def switch(x):
         x = x.astype(jnp.float16)
-        x = x.astype(jnp.float32)
+        x = x.astype(jnp.float32) * 10
         return x
     scale_factors = switch(scale_factors)
     scale_offsets = switch(scale_offsets)
     if based:
-        scale_factors = scale_factors.transpose(0, 2, 1).reshape(-1, 1, 1).astype(jnp.float32)
-        scale_offsets = scale_offsets.transpose(0, 2, 1).reshape(-1, 1, 1).astype(jnp.float32)
-        qs1 = qs1.transpose(0, 2, 1).reshape(-1, 12, 1)
-        qs2 = qs2.transpose(0, 2, 1).reshape(-1, 4, 32)
+        scale_factors = scale_factors.transpose(1, 0, 2).reshape(1, 1, num_blocks, -1).astype(jnp.float32)
+        scale_offsets = scale_offsets.transpose(1, 0, 2).reshape(1, 1, num_blocks, -1).astype(jnp.float32)
+        qs1 = qs1.transpose(1, 0, 2).reshape(12, 1, num_blocks, -1)
+        qs2 = qs2.transpose(1, 0, 2).reshape(4, 32, num_blocks, -1)
     else:
         scale_factors = scale_factors.transpose(0, 2, 1).reshape(-1, 1, 1).astype(jnp.float32)
         scale_offsets = scale_offsets.transpose(0, 2, 1).reshape(-1, 1, 1).astype(jnp.float32)
@@ -59,28 +59,44 @@ def matmul_4bit(inputs, scale_factors, scale_offsets, qs1, qs2, based=False):
     qs1 = i8tou8(qs1)
     qs2 = i8tou8(qs2)
 
-    chunk1 = qs1[:, 0:4]
-    chunk2 = qs1[:, 4:8]
-    chunk3 = qs1[:, 8:]
 
     # max 63
-    factor_scale = jnp.concatenate([chunk1 & 0b111111, (chunk3 & 15) | (sr(chunk1, 6) << 4)], axis=1)
-    offset_scale = jnp.concatenate([chunk2 & 0b111111, (sr(chunk3, 4) % 16) | (sr(chunk2, 6) << 4)], axis=1)
+    if based:
+        chunk1 = qs1[0:4]
+        chunk2 = qs1[4:8]
+        chunk3 = qs1[8:]
+        factor_scale = jnp.concatenate([chunk1 & 0b111111, (chunk3 & 15) | (sr(chunk1, 6) << 4)], axis=0)
+        offset_scale = jnp.concatenate([chunk2 & 0b111111, (sr(chunk3, 4) % 16) | (sr(chunk2, 6) << 4)], axis=0)
+    else:
+        chunk1 = qs1[:, 0:4]
+        chunk2 = qs1[:, 4:8]
+        chunk3 = qs1[:, 8:]
+        factor_scale = jnp.concatenate([chunk1 & 0b111111, (chunk3 & 15) | (sr(chunk1, 6) << 4)], axis=1)
+        offset_scale = jnp.concatenate([chunk2 & 0b111111, (sr(chunk3, 4) % 16) | (sr(chunk2, 6) << 4)], axis=1)
 
     basify = lambda x: x  # x.astype(jnp.int8) if not based else x
     factors = scale_factors * basify(factor_scale)
     offsets = scale_offsets * basify(offset_scale)
 
     # max 15
-    qs2 = jnp.stack([qs2 & 0xf, sr(qs2, 4)], axis=2).reshape(-1, 8, 32)
+    if based:
+        qs2 = jnp.stack([qs2 & 0xf, sr(qs2, 4)], axis=1).reshape(8, 32, num_blocks, -1)
+    else:
+        qs2 = jnp.stack([qs2 & 0xf, sr(qs2, 4)], axis=2).reshape(-1, 8, 32)
 
     matrix = factors * basify(qs2) - offsets
-    matrix = matrix.reshape(num_blocks, -1, 256).transpose(0, 2, 1)
-    return inputs @ matrix.reshape(inputs.shape[-1], -1)
+    if not based:
+        matrix = matrix.reshape(num_blocks, -1, 256).transpose(0, 2, 1)
+        return inputs @ matrix.reshape(inputs.shape[-1], -1)
+    else:
+        matrix = matrix.reshape(256, num_blocks, -1)
+        inputs = inputs.reshape(inputs.shape[0], num_blocks, 256)
+        result = jax.lax.dot_general(inputs, matrix, (((2, 1), (0, 1)), ((), ())))
+        return result
 
 def gen_4bit_mat():
     
-    a, b, c = 256 * 8, 256, 32
+    a, b, c = 256 * 8, 256, 512
     bs = 256
     key = jax.random.key(0)
     key_scale_factors, key_scale_offsets, key_qs1, key_qs2 = jax.random.split(key, 4)
