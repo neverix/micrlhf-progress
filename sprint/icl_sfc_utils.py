@@ -487,7 +487,7 @@ class Circuitizer(eqx.Module):
         grad = jax.vjp(f, resid_mid)[1](grad,)[0]
 
         return grad
-    def grad_through_attn(self, layer, grad):
+    def grad_through_attn(self, layer, grad, resid=None):
         subblock = self.llama.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).at_instances_of(pz.nn.Residual).pick_nth_selected(0).get().delta
 
         si_selection = subblock.select().at_instances_of(pz.de.HandledSideInputRef)
@@ -508,8 +508,37 @@ class Circuitizer(eqx.Module):
 
             return attn_out.astype(resid.dtype)
 
-        resid = self.resids_pre[layer]
+        if resid is None:
+            resid = self.resids_pre[layer]
         return jax.vjp(f, resid)[1](grad.astype(resid.dtype),)[0]
+
+    def grad_through_attn_fwd(self, layer, grad=None, resid=None):
+        subblock = self.llama.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).at_instances_of(pz.nn.Residual).pick_nth_selected(0).get().delta
+
+        si_selection = subblock.select().at_instances_of(pz.de.HandledSideInputRef)
+        keys = sorted(set([ref.tag for ref in si_selection.get_sequence()]))
+        replaced = si_selection.apply(lambda ref: pz.de.SideInputRequest(tag=ref.tag))
+        subblock = pz.de.WithSideInputsFromInputTuple.handling(replaced, keys)
+
+        side_inputs = {
+            'positions': self.llama_inputs.positions,
+            'attn_mask': self.llama_inputs.attention_mask
+        }
+
+        def f(resid):
+            resid_pre = pz.nx.wrap(resid, "batch", "seq", "embedding")
+            attn_out = subblock((resid_pre,) + tuple(side_inputs[tag] for tag in subblock.side_input_tags))
+
+            attn_out = attn_out.unwrap("batch", "seq", "embedding") 
+
+            return attn_out.astype(resid.dtype)
+
+        if resid is None:
+            resid = self.resids_pre[layer]
+        if grad is not None:
+            return jax.jvp(f, (resid,), (grad.astype(resid.dtype),))[1]
+        else:
+            return f(resid)
 
     @eqx.filter_jit
     def ablated_metric(self, llama_ablated):

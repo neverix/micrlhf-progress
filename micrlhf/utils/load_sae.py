@@ -110,11 +110,11 @@ def get_nev_sae():
     return sae_cache[key]
     
 
-def sae_encode(sae, vector):
+def sae_encode(sae, vector, **kwargs):
     if "threshold" in sae:
         return sae_encode_threshold(sae, vector)
     if "s_gate" in sae:
-        return sae_encode_gated(sae, vector)
+        return sae_encode_gated(sae, vector, **kwargs)
     pre_relu = vector @ sae["W_enc"] + sae["b_enc"]
     post_relu = jax.nn.relu(pre_relu)
     if "scaling_factor" in sae:
@@ -152,14 +152,15 @@ def weights_to_resid(weights, sae):
     # recon = recon.astype('bfloat16')
     return recon.astype(weights.dtype)
 
-def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None):
+def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None):
     inputs = vector
 
-    if "norm_factor" in sae:
-        inputs = inputs * sae["norm_factor"]
+    if pre_relu is None:
+        if "norm_factor" in sae:
+            inputs = inputs * sae["norm_factor"]
 
-    pre_relu = inputs @ sae["W_enc"]
-    pre_relu = pre_relu +sae["b_enc"]
+        pre_relu = inputs @ sae["W_enc"]
+        pre_relu = pre_relu +sae["b_enc"]
     post_relu = jax.nn.relu(pre_relu)
     
     post_relu = (post_relu > 0) * jax.nn.relu((inputs @ sae["W_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
