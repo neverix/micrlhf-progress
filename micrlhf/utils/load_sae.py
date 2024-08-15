@@ -2,6 +2,7 @@ import os
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import shutil
 from huggingface_hub import HfFileSystem
 from safetensors.flax import load_file, save_file
@@ -112,7 +113,7 @@ def get_nev_sae():
 
 def sae_encode(sae, vector, **kwargs):
     if "threshold" in sae:
-        return sae_encode_threshold(sae, vector)
+        return sae_encode_threshold(sae, vector, **kwargs)
     if "s_gate" in sae:
         return sae_encode_gated(sae, vector, **kwargs)
     pre_relu = vector @ sae["W_enc"] + sae["b_enc"]
@@ -151,6 +152,15 @@ def weights_to_resid(weights, sae):
 
     # recon = recon.astype('bfloat16')
     return recon.astype(weights.dtype)
+
+def sae_encode_threshold(sae, vector):
+    inputs = vector
+
+    hidden_pre = inputs @ sae["W_enc"] + sae["b_enc"]
+    feature_acts = jax.nn.relu(hidden_pre) * (hidden_pre > sae["threshold"])
+    recon = feature_acts @ sae["W_dec"] + sae["b_dec"]
+
+    return hidden_pre, feature_acts, recon
 
 def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None):
     inputs = vector
