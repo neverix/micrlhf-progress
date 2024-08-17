@@ -6,11 +6,9 @@ from more_itertools import chunked
 from penzai import pz
 from tqdm.auto import tqdm
 
-from micrlhf.llama import LlamaBlock
 from micrlhf.flash import flashify
-from micrlhf.sampling import sample, trange, jnp, load_tokenizer, jit_wrapper
-
-from micrlhf.sampling import jit_wrapper, jnp
+from micrlhf.llama import LlamaBlock
+from micrlhf.sampling import jit_wrapper, jnp, load_tokenizer, sample, trange
 from micrlhf.scan import sequential_to_scan
 
 combined_prompts = dict(phi="""<|user|>

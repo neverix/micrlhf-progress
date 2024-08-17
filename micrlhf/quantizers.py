@@ -2,7 +2,7 @@ import dataclasses
 import warnings
 from collections import OrderedDict
 from functools import partial
-from typing import Dict, Literal, Optional, Tuple, Callable
+from typing import Callable, Dict, Literal, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
