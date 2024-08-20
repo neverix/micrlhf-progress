@@ -3,6 +3,7 @@ import warnings
 from collections import OrderedDict
 from functools import partial
 from typing import Callable, Dict, Literal, Optional, Tuple
+from math import ceil
 
 import jax
 import jax.numpy as jnp
@@ -13,6 +14,7 @@ from jax.experimental.pallas import tpu as pltpu
 from jax.sharding import PartitionSpec as P
 from penzai import pz
 from penzai.toolshed import sharding_util
+from .gguf import GGUF_BLOCK_STRIDES
 
 
 def make_linear(old_linear: pz.nn.Linear,
@@ -32,12 +34,22 @@ def make_linear(old_linear: pz.nn.Linear,
         param = make_param(param, quant_type, tensor_data, shape, mesh, axis_name_to_mesh_name)
         return old_linear.select().at_instances_of(pz.nn.Parameter).apply(lambda p: param)
     new_data = []
+    quant_group_size = GGUF_BLOCK_STRIDES[quant_type.upper()]
+    is_transposed = quant_type == "q4_k"
     for d in tensor_data:
         d = d.reshape(*old_linear.output_axes.values(),
                         *list(old_linear.input_axes.values())[:-1], -1, d.shape[-1])
+        if quant_type == "q4_k":
+            og_shape = d.shape
+            d = d.reshape(*old_linear.output_axes.values(), -1, d.shape[-1])
+            dim_to_pad = d.shape[-2]
+            pad_with = (8 - dim_to_pad % 8) % 8
+            d = jnp.pad(d, ((0, 0),) * (d.ndim - 2) + ((0, pad_with), (0, 0)))
+            d = d.reshape(*old_linear.output_axes.values(), -1, *og_shape[len(old_linear.output_axes) + 1:])
         d = device_put_named_sharded(d, (*old_linear.output_axes.keys(), *old_linear.input_axes.keys(), "quant_group"),
                                      mesh, axis_name_to_mesh_name, load_on_cpu=load_on_cpu)
-        axes = (*old_linear.input_axes.keys(), "quant_group", *old_linear.output_axes.keys())
+        axes = (*old_linear.input_axes.keys(), "quant_group", *old_linear.output_axes.keys()) if not is_transposed else (
+            "quant_group", *old_linear.input_axes.keys(), *old_linear.output_axes.keys())
         d = d.untag(*axes).tag(*axes)
         new_data.append(d)
     def find_axis(keys):
@@ -58,6 +70,7 @@ def make_linear(old_linear: pz.nn.Linear,
             in_axis=in_axis,
             out_axis=out_axis,
             kernel=matmul_8bit_kernel,
+            is_transposed=is_transposed,
         ).speedup_matmul()
     elif quant_type == "q4_k":
         return LinearQuantizedTranspose(
@@ -70,6 +83,7 @@ def make_linear(old_linear: pz.nn.Linear,
             in_axis=in_axis,
             out_axis=out_axis,
             kernel=matmul_4bit_kernel,
+            is_transposed=is_transposed,
         ).speedup_matmul()
     else:
         raise NotImplementedError(f"Quantization type {quant_type} not implemented")
@@ -153,17 +167,16 @@ def matmul_4bit_kernel(inputs_ref,
     assert quant_group_size == 256
 
     block_step = block_k // 256
-    num_blocks = scale_factors_ref.shape[1] // block_step
+    num_blocks = int(ceil(scale_factors_ref.shape[1] / block_step))
     assert scale_factors_ref.shape[1] == scale_offsets_ref.shape[1] == qs1_ref.shape[1] == qs2_ref.shape[1]
     assert num_blocks >= 0
     assert block_k == block_step * 256
 
-    loop_iterations = num_blocks
     accum_ref[...] = jnp.zeros_like(accum_ref)
 
     block_m = qs2_ref.shape[-1]
     assert block_m == scale_factors_ref.shape[-1] == scale_offsets_ref.shape[-1] == qs1_ref.shape[-1]
-    assert block_k == (inputs_ref.shape[1] // loop_iterations)
+    assert block_k == (inputs_ref.shape[1] // num_blocks)
     block_n = inputs_ref.shape[0]
     def matmul_loop(i, _):
         block_slice = pl.dslice(i * block_step, block_step)
@@ -214,17 +227,21 @@ def matmul_4bit_kernel(inputs_ref,
         result = inputs @ matrix
 
         accum_ref[...] += result
-    jax.lax.fori_loop(0, loop_iterations, matmul_loop, init_val=None, unroll=True)
+    jax.lax.fori_loop(0, num_blocks, matmul_loop, init_val=None, unroll=True)
     outputs_ref[...] = accum_ref[...].astype(outputs_ref.dtype)
 
 
-def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, out_axis=None):
-    is_transpose = False if kernel.__name__ not in ("matmul_4bit_kernel",) else True
+def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, out_axis=None, is_transpose=False):
+    import inspect
+    quant_group_size = inspect.signature(kernel).parameters["quant_group_size"].default
+
+    assert inputs.ndim == 2
     is_f16 = False if kernel.__name__ not in ("matmul_4bit_kernel",) else True
 
     inputs = inputs.astype(jnp.bfloat16)
     tensors = [t if t.dtype.kind not in ("V", "f") else (t.astype(jnp.bfloat16) if not is_f16 else t.view(jnp.int16)) for t in tensors]
-    # tensors = [t.view(jnp.int8) if t.dtype == jnp.uint8 else t for t in tensors]
+    if kernel.__name__ == "matmul_4bit_kernel":
+        tensors = [t.view(jnp.int8) if t.dtype == jnp.uint8 else t for t in tensors]
 
     block_x, block_y, block_k = 256, 256, 512
     if kernel.__name__ == "matmul_4bit_kernel":
@@ -238,8 +255,6 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
     per_mp_output_size = y // out_mesh
     if per_block_size < block_x:
         block_x = max(16, int(2 ** np.floor(np.log2(per_block_size))))
-    if per_mp_input_size < block_k and kernel.__name__ != "matmul_4bit_kernel":
-        block_k = max(16, int(2 ** np.floor(np.log2(per_mp_input_size))))
     if per_mp_output_size < block_y:
         block_y = max(16, int(2 ** np.floor(np.log2(per_mp_output_size))))
     x_pad = (block_x - per_block_size) % block_x
@@ -251,6 +266,8 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
                         )
         inputs = inputs.reshape(-1, *inputs.shape[-2:])
         inputs = inputs.reshape(inputs.shape[0], -1)
+    assert inputs.shape[1] == tensors[0].shape[1 if is_transpose else 0] * quant_group_size
+
     y_pad = (block_y - y) % block_y
     if y_pad:
         tensors = [jnp.pad(t, ((0, 0), (0, 0), (0, y_pad))) for t in tensors]
@@ -259,6 +276,7 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
         if is_transpose:
             batch_dims = inputs.shape[:-1]
             inputs = inputs.reshape(*batch_dims, -1, block_k)
+            inputs = inputs.reshape(*batch_dims, -1, block_k // quant_group_size, quant_group_size)
             inputs = inputs.swapaxes(-2, -1)
             inputs = inputs.reshape(*batch_dims, -1)
 
@@ -320,6 +338,7 @@ class LinearQuantizedTranspose(QuantizedLinear):
     batch_axis: str = dataclasses.field(metadata={"pytree_node": False})
     in_axis: str = dataclasses.field(metadata={"pytree_node": False})
     out_axis: str = dataclasses.field(metadata={"pytree_node": False})
+    is_transposed: bool = dataclasses.field(metadata={"pytree_node": False}, default=False)
     sped_up: bool = dataclasses.field(metadata={"pytree_node": False}, default=False)
 
     @property
@@ -337,8 +356,8 @@ class LinearQuantizedTranspose(QuantizedLinear):
             pz.nx.wrap(pz.nx.nmap(jnp.ravel)(
                 pz.nx.nmap(jnp.ravel)(tensor.untag(*self.in_features.keys())).tag("in_features")
             .untag(*self.out_features.keys())).tag("out_features")
-            .unwrap("in_features", "quant_group", "out_features"),
-            ia, "quant_group", oa)
+            .unwrap(*(("in_features", "quant_group", "out_features") if not self.is_transposed else ("quant_group", "in_features", "out_features"))),
+            *((ia, "quant_group", oa) if not self.is_transposed else ("quant_group", ia, oa)))
             for tensor in params
         )
         return params
@@ -349,10 +368,11 @@ class LinearQuantizedTranspose(QuantizedLinear):
     def quant_linear(self, inputs: jnp.ndarray) -> jnp.ndarray:
         _, ia, oa = self.axes
         params = self.sped_up_params
-        params = (t.unwrap(ia, "quant_group", oa) for t in params)
+        params = (t.unwrap(*((ia, "quant_group", oa) if not self.is_transposed else ("quant_group", ia, oa))) for t in params)
         mesh = self.mesh
         return matmul_fast(inputs, *params, mesh=mesh, kernel=self.kernel,
-                           batch_axis=self.batch_axis, in_axis=self.in_axis, out_axis=self.out_axis)
+                           batch_axis=self.batch_axis, in_axis=self.in_axis, out_axis=self.out_axis,
+                           is_transpose=self.is_transposed)
 
 
 def make_param(uninitialized_param: pz.nn.UninitializedParameter,
