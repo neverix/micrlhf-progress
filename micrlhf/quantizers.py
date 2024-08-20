@@ -316,7 +316,7 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
         in_specs=(
             P(batch_axis, in_axis),
         ) + (
-            P(in_axis, None, out_axis),
+            P(in_axis, None, out_axis) if not is_transpose else P(None, in_axis, out_axis)
         ) * len(tensors),
         out_specs=P(batch_axis, out_axis),
         check_rep=False
