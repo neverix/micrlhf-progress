@@ -256,6 +256,11 @@ def matmul_fast(inputs, *tensors, kernel, mesh, batch_axis="dp", in_axis=None, o
         tensors = [jnp.pad(t, ((0, 0), (0, 0), (0, y_pad))) for t in tensors]
 
     def kernel_call(inputs, *tensors):
+        if is_transpose:
+            batch_dims = inputs.shape[:-1]
+            inputs = inputs.reshape(*batch_dims, -1, block_k)
+            inputs = inputs.swapaxes(-2, -1)
+            inputs = inputs.reshape(*batch_dims, -1)
 
         grid_spec = pltpu.PrefetchScalarGridSpec(
             num_scalar_prefetch=0,
