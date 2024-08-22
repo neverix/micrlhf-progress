@@ -1,10 +1,11 @@
-from optax import GradientTransformation, scale_by_adam, scale_by_learning_rate, chain
-from matplotlib import pyplot as plt
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-from tqdm.auto import trange
-import equinox as eqx
 import numpy as np
+from matplotlib import pyplot as plt
+from optax import (GradientTransformation, chain, scale_by_adam,
+                   scale_by_learning_rate)
+from tqdm.auto import trange
 
 
 def gen_quant_table(dtq=False, signed=True):
@@ -122,8 +123,9 @@ def transpose():
 
 
 if __name__ == "__main__":
-    from matplotlib import pyplot as plt
     import os
+
+    from matplotlib import pyplot as plt
 
     os.makedirs("figures/scratch", exist_ok=True)
     

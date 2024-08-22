@@ -147,7 +147,7 @@ def read_gguf_info(filename: os.PathLike):
             shape_len = read_gguf_value(gguf, GGUF_DATA_TYPE_INV["int32"])
             shape = [read_gguf_value(gguf, GGUF_DATA_TYPE_INV["uint64"]) for _ in range(shape_len)]
             ggml_type = read_gguf_value(gguf, GGUF_DATA_TYPE_INV["uint32"])
-            assert ggml_type in GGUF_TENSOR_TYPES
+            assert ggml_type in GGUF_TENSOR_TYPES, f"Unknown GGML type {ggml_type} for tensor {name}"
             ggml_type = GGUF_TENSOR_TYPES[ggml_type]
             offset = read_gguf_value(gguf, GGUF_DATA_TYPE_INV["uint64"])
             size = np.prod(shape) * GGUF_BLOCK_SIZES[ggml_type] // GGUF_BLOCK_STRIDES[ggml_type]

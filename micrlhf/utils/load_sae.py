@@ -1,8 +1,9 @@
 import os
+import shutil
 
 import jax
 import jax.numpy as jnp
-import shutil
+import numpy as np
 from huggingface_hub import HfFileSystem
 from safetensors.flax import load_file, save_file
 
@@ -78,6 +79,27 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
 
     return sae_weights
 
+def get_dm_res_sae(layer):
+    key = f"dm_gemma2_2b_res_{layer}"
+    if key in sae_cache:
+        return sae_cache[key]
+    url = f"google/gemma-scope-2b-pt-res/layer_{layer}/width_16k/canonical/params.npz"
+    fs = HfFileSystem()
+    os.makedirs("models/sae", exist_ok=True)
+    fname = f"models/sae/dm_gemma2_2b_res_{layer}.npz"
+    if not os.path.exists(fname):
+        with open(fname, "wb") as f:
+            with fs.open(url, "rb") as f2:
+                f.write(f2.read())
+    state_dict = {}
+    with np.load(fname) as data:
+        for key in data.keys():
+            state_dict_key = key
+            if state_dict_key.startswith("w_"):
+                state_dict_key = "W_" + state_dict_key[2:]
+            state_dict[state_dict_key] = data[key]
+    return state_dict
+
 def get_nev_sae():
     key = "gemma_2b_nev_16k"
     if key not in sae_cache:
@@ -87,8 +109,11 @@ def get_nev_sae():
         sae_weights = load_file(fname)
         sae_cache[key] = sae_weights
     return sae_cache[key]
+    
 
 def sae_encode(sae, vector, **kwargs):
+    if "threshold" in sae:
+        return sae_encode_threshold(sae, vector, **kwargs)
     if "s_gate" in sae:
         return sae_encode_gated(sae, vector, **kwargs)
     pre_relu = vector @ sae["W_enc"] + sae["b_enc"]
@@ -127,6 +152,15 @@ def weights_to_resid(weights, sae):
 
     # recon = recon.astype('bfloat16')
     return recon.astype(weights.dtype)
+
+def sae_encode_threshold(sae, vector):
+    inputs = vector
+
+    hidden_pre = inputs @ sae["W_enc"] + sae["b_enc"]
+    feature_acts = jax.nn.relu(hidden_pre) * (hidden_pre > sae["threshold"])
+    recon = feature_acts @ sae["W_dec"] + sae["b_dec"]
+
+    return hidden_pre, feature_acts, recon
 
 def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None):
     inputs = vector

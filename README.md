@@ -43,8 +43,6 @@ Download models:
 mkdir -p models
 # wget -c 'https://huggingface.co/QuantFactory/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf?download=true' -c -O models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf
 wget -c 'https://huggingface.co/PrunaAI/Meta-Llama-Guard-2-8B-GGUF-smashed/resolve/main/Meta-Llama-Guard-2-8B.Q8_0.gguf?download=true' -O models/llama-guard-q8_0.gguf
-# wget -c 'https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-fp16.gguf?download=true' -O models/phi-3-16.gguf
-# wget -c 'https://huggingface.co/lmstudio-community/Phi-3-mini-4k-instruct-GGUF/resolve/main/Phi-3-mini-4k-instruct-fp16.gguf?download=true' -O models/phi-3-16.gguf
 wget -c 'https://huggingface.co/SanctumAI/Phi-3-mini-4k-instruct-GGUF/resolve/main/phi-3-mini-4k-instruct.fp16.gguf?download=true' -O models/phi-3-16.gguf
 wget -c 'https://huggingface.co/failspy/kappa-3-phi-3-4k-instruct-abliterated-GGUF/resolve/main/ggml-model-f16.gguf?download=true' -O models/abl.gguf
 wget -c 'https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q8_0.gguf?download=true' -O models/tinyllama-1.1b-q8_0.gguf
@@ -52,10 +50,10 @@ wget -c 'https://huggingface.co/mlabonne/gemma-2b-GGUF/resolve/main/gemma-2b.Q8_
 wget -c 'https://huggingface.co/mlabonne/gemma-2b-it-GGUF/resolve/main/gemma-2b-it.Q8_0.gguf?download=true' -O models/gemma-2b-it.gguf
 wget -c 'https://huggingface.co/mlabonne/gemma-2b-it-GGUF/resolve/main/gemma-2b-it.Q6_K.gguf?download=true' -O models/gemma-2b-it-q6_k.gguf
 wget -c 'https://huggingface.co/mlabonne/gemma-2b-it-GGUF/resolve/main/gemma-2b-it.Q4_K_S.gguf' -O models/gemma-2b-it-q4_k_s.gguf
-wget -c 'https://huggingface.co/mlabonne/gemma-2b-it-GGUF/resolve/main/gemma-2b-it.Q4_K_M.gguf?download=true' -O models/gemma-2b-it-q4_k.gguf
 wget -c 'https://huggingface.co/MaziyarPanahi/Meta-Llama-3-70B-Instruct-GGUF/resolve/main/Meta-Llama-3-70B-Instruct.Q8_0-00001-of-00002.gguf?download=true' -O models/llama-3-70b-1.gguf
 wget -c 'https://huggingface.co/MaziyarPanahi/Meta-Llama-3-70B-Instruct-GGUF/resolve/main/Meta-Llama-3-70B-Instruct.Q8_0-00002-of-00002.gguf?download=true' -O models/llama-3-70b-2.gguf
 wget -c 'https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q8_0.gguf?download=true' -O models/gemma-2-9b-it.gguf
+wget -c 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q8_0.gguf?download=true' -O models/gemma-2-2b-it.gguf
 ```
 
 For evals:
