@@ -609,7 +609,7 @@ class Circuitizer(eqx.Module):
                 n_nodes_counts.append(int(n_nodes))
         else:
             for threshold in tqdm(thresholds):
-                abl_met, n_nodes = self.ablate_nodes(threshold, ablate_resids=True, topk=topk)
+                abl_met, n_nodes = self.ablate_nodes(threshold, ablate_resids=True)
                 ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
 
