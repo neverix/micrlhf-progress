@@ -1,4 +1,5 @@
 import tarfile
+import random
 
 import jax
 import pandas as pd
@@ -10,6 +11,7 @@ from micrlhf.flash import flashify
 from micrlhf.llama import LlamaBlock
 from micrlhf.sampling import jit_wrapper, jnp, load_tokenizer, sample, trange
 from micrlhf.scan import sequential_to_scan
+from datasets import load_dataset
 
 combined_prompts = dict(phi="""<|user|>
 {}
@@ -31,21 +33,41 @@ Answer: ({}""")
 
 
 class MMLUEval(object):
-    def __init__(self, dataset_path: str = "data/mmlu.tar", prompt_format="phi"):
+    def __init__(self, dataset_path: str = "data/mmlu.tar", prompt_format="phi", use_truthfulqa=False):
         dataset = []
         incorrect_dataset = []
-        with tarfile.open(dataset_path) as data:
-            for m in data.getmembers():
-                if not m.name.startswith("data/val"):
+        def add_r(r):
+            dataset.append(combined_prompts[prompt_format].format(*r))
+            for other_letter in (set("ABCD") - {r[-1]}):
+                incorrect_dataset.append(combined_prompts[prompt_format].format(*r[:-1], other_letter))
+        if use_truthfulqa:
+            ds = load_dataset("truthfulqa/truthful_qa", "multiple_choice")["validation"]
+            gen = random.Random(0)
+            for d in ds:
+                m = d["mc1_targets"]
+                assert sum(m["labels"]) == 1
+                assert m["labels"][0] == 1
+                if len(m["choices"]) < 4:
                     continue
-                if not m.name.endswith(".csv"):
-                    continue
-                df = pd.read_csv(data.extractfile(m))
-                for _, r in df.iterrows():
-                    r = r.tolist()
-                    dataset.append(combined_prompts[prompt_format].format(*r))
-                    for other_letter in (set("ABCD") - {r[-1]}):
-                        incorrect_dataset.append(combined_prompts[prompt_format].format(*r[:-1], other_letter))
+                options = m["choices"][:4]
+                indexer = list(range(4))
+                gen.shuffle(indexer)
+                r = [d["question"]] + [options[i] for i in indexer] + ["ABCD"[indexer.index(0)]]
+                add_r(r)
+        else:
+            with tarfile.open(dataset_path) as data:
+                for m in data.getmembers():
+                    if not m.name.startswith("data/val"):
+                        continue
+                    if not m.name.endswith(".csv"):
+                        continue
+                    df = pd.read_csv(data.extractfile(m))
+                    for _, r in df.iterrows():
+                        r = r.tolist()
+                        if len(r) != 6:
+                            continue
+                        add_r(r)
+        print(len(dataset), len(incorrect_dataset))
         self.dataset = dataset
         self.incorrect_dataset = incorrect_dataset
 
