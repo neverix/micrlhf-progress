@@ -39,14 +39,14 @@ def check_if_single_token(token):
 
 def main(task_name):
     task = tasks[task_name]
-    task = {
-        k:v for k,v in task.items() if check_if_single_token(k) and check_if_single_token(v)
-    }
+    # task = {
+    #     k:v for k,v in task.items() if check_if_single_token(k) and check_if_single_token(v)
+    # }
 
     pairs = list(task.items())
 
     batch_size = 8 
-    n_shot=20
+    n_shot=16
     max_seq_len = 128
     seed = 10
 
@@ -177,7 +177,7 @@ def main(task_name):
     weight_threshold = sorted_graph[n_nodes * k_connections][0]
 
     import json
-    with open(f"micrlhf-progress/graph-{task_name}.json", 'w') as f:
+    with open(f"micrlhf-progress/all-graph-{task_name}.json", 'w') as f:
         json.dump({"edges": graph, "nodes": combined_ies, "threshold": weight_threshold}, f)
 
 

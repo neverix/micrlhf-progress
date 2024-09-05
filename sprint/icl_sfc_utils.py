@@ -80,6 +80,7 @@ def sfc_simple(grad, resid, target, sae):
 
 
 sep = 3978
+newline = 108
 pad = 0
 
 def metric_fn(logits, resids, tokens, use_softmax=False):
@@ -108,15 +109,16 @@ class AblatedModule(pz.Layer):
     def __call__(self, x):
         inp = x.unwrap("batch", "seq", "embedding")
         out = self.module(x)
-        result = 0
         out = out.unwrap("batch", "seq", "embedding")
+        result = 0
         for mask, mask_values in self.masks.items():
             _, _, recon = sae_encode_gated(self.sae, inp)
             error = out - recon
             _, _, recon_ablated = sae_encode_gated(self.sae, inp, keep_features=self.keep_features[mask])
             res = recon_ablated + error
             res = res * mask_values[..., None]
-            result = result + res
+            result = result * (1 - mask_values[..., None]) + res
+        # return out
         return pz.nx.wrap(result, "batch", "seq", "embedding")
 
 class Circuitizer(eqx.Module):
@@ -173,13 +175,16 @@ class Circuitizer(eqx.Module):
 
         print("Setting up masks...")
         prompt_length = len(tokenizer.tokenize(prompt))
-        periods = ["input", "arrow", "output", "newline"]
-        self.masks = OrderedDict([
+
+        masks = [
             ("prompt", jnp.zeros_like(self.train_tokens).at[:, :prompt_length].set(1).astype(bool)),
-            *[
-                (period, jnp.zeros_like(self.train_tokens).at[:, prompt_length+i::len(periods)].set(1).astype(bool) * (self.train_tokens != pad)) for i, period in enumerate(periods)
-            ]
-        ])
+            ("input", jnp.roll(self.train_tokens == sep, -1, axis=-1).at[:, :prompt_length].set(False)),
+            ("arrow", jnp.array(self.train_tokens == sep).at[:, :prompt_length].set(False)), 
+            ("output", jnp.roll(self.train_tokens == newline, -1, axis=-1).at[:, :prompt_length].set(False)),
+            ("newline", jnp.array(self.train_tokens == newline).at[:, :prompt_length].set(False)),
+        ]
+
+        self.masks = OrderedDict(masks)
 
         print("Running metrics...")
         self.run_metrics()
@@ -545,7 +550,7 @@ class Circuitizer(eqx.Module):
         ablated_logits = llama_ablated(self.llama_inputs)
         return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, self.train_tokens, use_softmax=True)
 
-    def mask_ie(self, ie, threshold, topk=None):
+    def mask_ie(self, ie, threshold, topk=None, inverse=False):
         out_masks = {}
         total_nodes = 0
         for mask in self.masks:
@@ -556,11 +561,14 @@ class Circuitizer(eqx.Module):
                 out_masks[mask] = jnp.zeros_like(ie_averaged).astype(bool).at[i].set(1)
             else:
                 out_masks[mask] = jnp.abs(ie_averaged) > threshold
+
+            if inverse:
+                out_masks[mask] = ~out_masks[mask]
             total_nodes += out_masks[mask].sum()
         return out_masks, total_nodes
 
     @eqx.filter_jit
-    def ablate_nodes(self, threshold, ablate_resids=False, topk=None):
+    def ablate_nodes(self, threshold, ablate_resids=False, topk=None, inverse=False):
         saes = self.saes
         ie_resid = self.ie_resid
         ie_attn, ie_transcoder = self.ie_attn, self.ie_transcoder
@@ -575,20 +583,20 @@ class Circuitizer(eqx.Module):
                 if ablate_resids:
                     try:
                         resid = saes[(layer, "resid")]
-                        mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold, topk)
+                        mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold, topk, inverse=inverse)
                         block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, self.masks), x]))
                     except KeyError:
                         pass
                 try:
                     attn_out = saes[(layer, "attn_out")]
-                    mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk)
+                    mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk, inverse=inverse)
                     block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, self.masks)]))
                 except KeyError:
                     pass
 
                 try:
                     transcoder = saes[(layer, "transcoder")]
-                    mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk)
+                    mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk, inverse=inverse)
                     block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, self.masks, x))
                 except KeyError:
                     pass
@@ -598,18 +606,18 @@ class Circuitizer(eqx.Module):
             llama_ablated = block_selection.apply(converter)
         return self.ablated_metric(llama_ablated), n_nodes[0]
 
-    def run_ablated_metrics(self, thresholds, topks=None):
+    def run_ablated_metrics(self, thresholds, topks=None, inverse=False):
         n_nodes_counts = []
         ablated_metrics = []
 
         if topks is not None:
             for topk in topks:
-                abl_met, n_nodes = self.ablate_nodes(0, ablate_resids=True, topk=topk)
+                abl_met, n_nodes = self.ablate_nodes(0, ablate_resids=True, topk=topk, inverse=inverse)
                 ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
         else:
             for threshold in tqdm(thresholds):
-                abl_met, n_nodes = self.ablate_nodes(threshold, ablate_resids=True)
+                abl_met, n_nodes = self.ablate_nodes(threshold, ablate_resids=True, inverse=inverse)
                 ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
 

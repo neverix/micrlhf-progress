@@ -212,6 +212,14 @@ def logprob_loss(logits, tokens, sep=1599, pad_token=32000, n_first=None, shift=
 
     return -logits.sum(axis=-1).mean(axis=-1)
 
+def task_vector_mask(tokens, sep=1599, shift=None):
+    mask = tokens == sep
+    
+    if shift is not None:
+        mask = jnp.roll(mask, shift, axis=-1)
+
+    return mask
+
 def make_act_adder(llama, tv, tokens, layer, length=1, sep=1599, shift=0):
     mask = tokens == sep
 
