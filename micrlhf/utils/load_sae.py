@@ -172,9 +172,8 @@ def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_
 
         pre_relu = inputs @ sae["W_enc"]
         pre_relu = pre_relu +sae["b_enc"]
-    post_relu = jax.nn.relu(pre_relu)
     
-    post_relu = (post_relu > 0) * jax.nn.relu((inputs @ sae["W_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
+    post_relu = (pre_relu > 0) * jax.nn.relu((pre_relu - sae["b_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
 
     if keep_features is not None:
         post_relu = post_relu * keep_features

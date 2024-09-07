@@ -14,7 +14,7 @@ from penzai import pz
 from tqdm.auto import trange, tqdm
 from micrlhf.llama import LlamaBlock
 from micrlhf.utils.activation_manipulation import add_vector
-from micrlhf.utils.load_sae import get_sae, weights_to_resid
+from micrlhf.utils.load_sae import get_sae, sae_encode
 from micrlhf.sampling import jit_wrapper
 
 
@@ -374,12 +374,19 @@ class FeatureSearch:
         return taker
     
     def get_loss(self, weights):
-        if "s_gate" in self.sae:
-            weights = (weights > 0) * jax.nn.relu(weights * jax.nn.softplus(self.sae["s_gate"]) * self.sae.get("scaling_factor", 1.0) + self.sae["b_gate"])   
+
+        if "threshold" in self.sae:
+            weights = jax.nn.relu(weights) * (weights > self.sae["threshold"])
+
+        elif "s_gate" in self.sae:
+            weights = (weights > 0) * jax.nn.relu((weights - self.sae["b_enc"]) * jax.nn.softplus(self.sae["s_gate"]) * self.sae.get("scaling_factor", 1.0) + self.sae["b_gate"])
         else:
             weights = jax.nn.relu(weights)
 
-        recon = jnp.einsum("fv,f->v", self.sae["W_dec"], weights)
+
+        # recon = jnp.einsum("fv,f->v", self.sae["W_dec"], weights)
+
+        recon = weights @ self.sae["W_dec"]
 
         recon = recon + self.sae["b_dec"]
 

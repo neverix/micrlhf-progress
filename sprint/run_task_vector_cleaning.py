@@ -60,7 +60,7 @@ def tokenized_to_inputs(input_ids, attention_mask):
 
 from sprint.task_vector_utils import ICLRunner, logprob_loss, get_tv, make_act_adder
 
-from micrlhf.utils.load_sae import sae_encode, sae_encode_gated, weights_to_resid
+from micrlhf.utils.load_sae import sae_encode
 
 from safetensors import safe_open
 
@@ -87,9 +87,7 @@ n_few_shots, batch_size, max_seq_len = 20, 16, 256
 prompt = "Follow the pattern:\n{}"
 
 
-from sprint.task_vector_utils import ICLRunner, logprob_loss, get_tv, make_act_adder
-
-from micrlhf.utils.load_sae import sae_encode, sae_encode_gated
+from sprint.task_vector_utils import ICLRunner, logprob_loss, get_tv, make_act_adder, weights_to_resid
 
 from safetensors import safe_open
 from sprint.task_vector_utils import FeatureSearch
@@ -97,9 +95,8 @@ from micrlhf.utils.ito import grad_pursuit
 
 seed = 10
 
-
-collected_weights = []
 layers = [2, 4, 6, 8, 10, 12, 14, 16]
+layers = [12]
 
 # layer = 12
 for task in tqdm(task_names):
@@ -154,8 +151,7 @@ for task in tqdm(task_names):
             f"TV: {task}, L: {layer}, Loss: {tv_loss}"  
         )
         
-
-        _, pr, rtv = sae_encode_gated(sae, tv)
+        pr, _, rtv = sae_encode(sae, tv)
 
         add_act = make_act_adder(llama, rtv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
 
@@ -183,42 +179,31 @@ for task in tqdm(task_names):
             f"Grad pursuit TV: {task}, L: {layer}, Loss: {ito_loss}"
         )
 
-        # fs = FeatureSearch(task, pairs, layer, llama, tokenizer, n_shot=1, seed=seed+100, init_w=pr, early_stopping_steps=200, n_first=2, sep=sep, pad_token=0, sae_v=8, sae=sae, batch_size=24, iterations=1000, prompt=prompt, l1_coeff=0.05)
+        fs = FeatureSearch(task, pairs, layer, llama, tokenizer, n_shot=1, seed=seed+100, init_w=pr, early_stopping_steps=200, n_first=2, sep=sep, pad_token=0, sae_v=8, sae=sae, batch_size=24, iterations=1000, prompt=prompt, l1_coeff=0.05)
 
-        # w, m = fs.find_weights()
+        w, m = fs.find_weights()
 
-        # collected_weights.append(
-        #     w                                           
-        # )
-
-        # weights = (w > 0) * jax.nn.relu(w * jax.nn.softplus(sae["s_gate"]) + sae["b_gate"])   
-
-        # weights = jax.nn.relu(w)
-
-        # recon = jnp.einsum("fv,f->v", sae["W_dec"], weights) + sae["b_dec"]
+        _, _, recon = sae_encode(sae, None, pre_relu=w)
         
-        # if "out_norm_factor" in sae:
-        #     recon = recon / sae["out_norm_factor"]
-        
-        # recon = recon.astype('bfloat16')
+        recon = recon.astype('bfloat16')
 
-        # add_act = make_act_adder(llama, recon, tokens, layer, length=1, shift= 0, sep=sep)
+        add_act = make_act_adder(llama, recon, tokens, layer, length=1, shift= 0, sep=sep)
 
-        # logits = add_act(inputs)
+        logits = add_act(inputs)
 
-        # loss = logprob_loss(
-        #     logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=1 if task.startswith("algo") else 0, n_first=2, sep=sep, pad_token=0
-        # )
+        loss = logprob_loss(
+            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=1 if task.startswith("algo") else 0, n_first=2, sep=sep, pad_token=0
+        )
 
-        # print(
-        #     f"Recon fs: {task}, L: {layer}, Loss: {loss}"  
-        # )
+        print(
+            f"Recon fs: {task}, L: {layer}, Loss: {loss}"  
+        )
 
-        with open("cleanup_results_ito.jsonl", "a") as f:
+        with open("cleanup_results_fixed.jsonl", "a") as f:
             item = {
                 "task": task,
-                # "weights": w.tolist(),
-                # "loss": loss.tolist(),
+                "weights": w.tolist(),
+                "loss": loss.tolist(),
                 "recon_loss": recon_loss.tolist(),
                 "ito_loss": ito_loss.tolist(),
                 "tv_loss": tv_loss.tolist(),
