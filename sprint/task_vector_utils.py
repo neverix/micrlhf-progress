@@ -19,45 +19,45 @@ from micrlhf.sampling import jit_wrapper
 
 
 
-def generate_algorithmic_tasks(seed = 0, n_examples=300, max_len=10, max_value=100):
+def generate_algorithmic_tasks(seed = 0, n_examples=300, min_len=3, max_len=6, max_value=100):
     generator = random.Random(seed)
     tasks = {}
 
     tasks["algo_max"] = {}
     for _ in range(n_examples):
-        length = generator.randint(1, max_len)
+        length = generator.randint(min_len, max_len)
         a = [generator.randint(0, max_value) for _ in range(length)]
         tasks["algo_max"][f"{a}"] = f"{max(a)}"
 
     tasks["algo_min"] = {}
     for _ in range(n_examples):
-        length = generator.randint(1, max_len)
+        length = generator.randint(min_len, max_len)
         a = [generator.randint(0, max_value) for _ in range(length)]
         tasks["algo_min"][f"{a}"] = f"{min(a)}"
 
     tasks["algo_last"] = {}
     for _ in range(n_examples):
-        length = generator.randint(1, max_len)
+        length = generator.randint(min_len, max_len)
         a = [generator.randint(0, max_value) for _ in range(length)]
         tasks["algo_last"][f"{a}"] = f"{a[-1]}"
     
     tasks["algo_first"] = {}
     for _ in range(n_examples):
-        length = generator.randint(1, max_len)
+        length = generator.randint(min_len, max_len)
         a = [generator.randint(0, max_value) for _ in range(length)]
         tasks["algo_first"][f"{a}"] = f"{a[0]}"
 
-    tasks["algo_sum"] = {}
-    for _ in range(n_examples):
-        length = generator.randint(1, max_len)
-        a = [generator.randint(0, max_value) for _ in range(length)]
-        tasks["algo_sum"][f"{a}"] = f"{sum(a)}"
+    # tasks["algo_sum"] = {}
+    # for _ in range(n_examples):
+    #     length = generator.randint(min_len, max_len)
+    #     a = [generator.randint(0, max_value) for _ in range(length)]
+    #     tasks["algo_sum"][f"{a}"] = f"{sum(a)}"
     
-    tasks["algo_most_common"] = {}
-    for _ in range(n_examples):
-        length = generator.randint(1, max_len)
-        a = [generator.randint(0, max_value) for _ in range(length)]
-        tasks["algo_most_common"][f"{a}"] = f"{max(set(a), key=a.count)}"
+    # tasks["algo_most_common"] = {}
+    # for _ in range(n_examples):
+    #     length = generator.randint(min_len, max_len)
+    #     a = [generator.randint(0, max_value) for _ in range(length)]
+    #     tasks["algo_most_common"][f"{a}"] = f"{max(set(a), key=a.count)}"
 
     return tasks
 
@@ -264,7 +264,7 @@ class ICLRunner:
         self.n_shot = n_shot
         self.max_seq_len = max_seq_len
         
-        self.prepend_space = task.startswith("algo")
+        self.prepend_space = False
 
         self.gen = random.Random(seed)
 
