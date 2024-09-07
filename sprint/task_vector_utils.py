@@ -14,7 +14,7 @@ from penzai import pz
 from tqdm.auto import trange, tqdm
 from micrlhf.llama import LlamaBlock
 from micrlhf.utils.activation_manipulation import add_vector
-from micrlhf.utils.load_sae import get_sae, sae_encode
+from micrlhf.utils.load_sae import get_sae, sae_encode, weights_to_resid
 from micrlhf.sampling import jit_wrapper
 
 
@@ -377,6 +377,10 @@ class FeatureSearch:
     def get_loss(self, weights):
         _, weights, recon = sae_encode(self.sae, None, pre_relu=weights)
 
+        # weights = jax.nn.relu(weights)
+
+        # recon = weights_to_resid(weights, self.sae)
+
         recon = recon.astype('bfloat16')
 
         mask = self.eval_tokens == self.sep
@@ -395,7 +399,7 @@ class FeatureSearch:
 
         # self.l1_coeff *= 1.002
 
-        return loss + self.l1_coeff * jnp.linalg.norm(weights, ord=1), (int((weights != 0).sum()), loss)
+        return loss + self.l1_coeff * jnp.linalg.norm(weights, ord=1), (int((weights > self.sae.get("threshold", 0)).sum()), loss)
 
     def train_step(self, weights, opt_state, optimizer):
         (loss, (l0, loss_)), grad = self.lwg(weights)
