@@ -138,10 +138,7 @@ def resids_to_weights(vector, sae):
     return post_relu
 
 def weights_to_resid(weights, sae):
-    if "s_gate" in sae:
-        weights = (weights > 0) * jax.nn.relu(weights * jax.nn.softplus(sae["s_gate"]) * sae.get("scaling_factor", 1.0) + sae["b_gate"])   
-    else:
-        weights = jax.nn.relu(weights)
+    weights = jax.nn.relu(weights)
 
     recon = jnp.einsum("fv,bsf->bsv", sae["W_dec"], weights)
 
@@ -153,14 +150,18 @@ def weights_to_resid(weights, sae):
     # recon = recon.astype('bfloat16')
     return recon.astype(weights.dtype)
 
-def sae_encode_threshold(sae, vector):
+def sae_encode_threshold(sae, vector, pre_relu=None):
     inputs = vector
 
-    hidden_pre = inputs @ sae["W_enc"] + sae["b_enc"]
-    feature_acts = jax.nn.relu(hidden_pre) * (hidden_pre > sae["threshold"])
+    if pre_relu is None:
+        pre_relu = inputs @ sae["W_enc"] + sae["b_enc"]
+
+    post_relu = jax.nn.relu(pre_relu)
+
+    feature_acts = post_relu * (pre_relu > sae["threshold"])
     recon = feature_acts @ sae["W_dec"] + sae["b_dec"]
 
-    return hidden_pre, feature_acts, recon
+    return pre_relu, feature_acts, recon
 
 def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None):
     inputs = vector
