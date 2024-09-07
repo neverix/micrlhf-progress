@@ -314,6 +314,7 @@ def make_get_resids(llama, layer_target):
     get_resids = pz.de.CollectingSideOutputs.handling(get_resids, tag_predicate=lambda x: x.startswith("resid_pre"))
     return get_resids
 
+
 class FeatureSearch:
     def __init__(self, task, pairs, target_layer, llama, tokenizer, batch_size=32, n_shot=20, early_stopping_steps=50, 
                  max_seq_len=256, iterations=2000, seed=9, l1_coeff=2e-2, lr=1e-2, sep=1599, pad_token=32000,
@@ -374,24 +375,7 @@ class FeatureSearch:
         return taker
     
     def get_loss(self, weights):
-
-        if "threshold" in self.sae:
-            weights = jax.nn.relu(weights) * (weights > self.sae["threshold"])
-
-        elif "s_gate" in self.sae:
-            weights = (weights > 0) * jax.nn.relu((weights - self.sae["b_enc"]) * jax.nn.softplus(self.sae["s_gate"]) * self.sae.get("scaling_factor", 1.0) + self.sae["b_gate"])
-        else:
-            weights = jax.nn.relu(weights)
-
-
-        # recon = jnp.einsum("fv,f->v", self.sae["W_dec"], weights)
-
-        recon = weights @ self.sae["W_dec"]
-
-        recon = recon + self.sae["b_dec"]
-
-        if "out_norm_factor" in self.sae:
-            recon = recon / self.sae["out_norm_factor"]
+        _, weights, recon = sae_encode(self.sae, None, pre_relu=weights)
 
         recon = recon.astype('bfloat16')
 

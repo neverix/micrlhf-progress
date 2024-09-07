@@ -145,7 +145,7 @@ def weights_to_resid(weights, sae):
     recon = recon + sae["b_dec"]
 
     if "out_norm_factor" in sae:
-        recon = recon * sae["out_norm_factor"]
+        recon = recon / sae["out_norm_factor"]
 
     # recon = recon.astype('bfloat16')
     return recon.astype(weights.dtype)
