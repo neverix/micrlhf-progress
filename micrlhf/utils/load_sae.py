@@ -140,7 +140,7 @@ def resids_to_weights(vector, sae):
 def weights_to_resid(weights, sae):
     weights = jax.nn.relu(weights)
 
-    recon = jnp.einsum("fv,bsf->bsv", sae["W_dec"], weights)
+    recon = jnp.einsum("fv,...f->...v", sae["W_dec"], weights)
 
     recon = recon + sae["b_dec"]
 

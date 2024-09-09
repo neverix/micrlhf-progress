@@ -19,33 +19,67 @@ from micrlhf.sampling import jit_wrapper
 
 
 
-def generate_algorithmic_tasks(seed = 0, n_examples=300, min_len=3, max_len=6, max_value=100):
+def generate_algorithmic_tasks(seed = 0, n_examples=300, length=4, max_value=100):
     generator = random.Random(seed)
     tasks = {}
 
     tasks["algo_max"] = {}
     for _ in range(n_examples):
-        length = generator.randint(min_len, max_len)
         a = [generator.randint(0, max_value) for _ in range(length)]
         tasks["algo_max"][f"{a}"] = f"{max(a)}"
 
     tasks["algo_min"] = {}
     for _ in range(n_examples):
-        length = generator.randint(min_len, max_len)
         a = [generator.randint(0, max_value) for _ in range(length)]
         tasks["algo_min"][f"{a}"] = f"{min(a)}"
 
     tasks["algo_last"] = {}
     for _ in range(n_examples):
-        length = generator.randint(min_len, max_len)
         a = [generator.randint(0, max_value) for _ in range(length)]
         tasks["algo_last"][f"{a}"] = f"{a[-1]}"
     
     tasks["algo_first"] = {}
     for _ in range(n_examples):
-        length = generator.randint(min_len, max_len)
         a = [generator.randint(0, max_value) for _ in range(length)]
         tasks["algo_first"][f"{a}"] = f"{a[0]}"
+
+    # tasks["algo_sum"] = {}
+    # for _ in range(n_examples):
+    #     length = generator.randint(min_len, max_len)
+    #     a = [generator.randint(0, max_value) for _ in range(length)]
+    #     tasks["algo_sum"][f"{a}"] = f"{sum(a)}"
+    
+    # tasks["algo_most_common"] = {}
+    # for _ in range(n_examples):
+    #     length = generator.randint(min_len, max_len)
+    #     a = [generator.randint(0, max_value) for _ in range(length)]
+    #     tasks["algo_most_common"][f"{a}"] = f"{max(set(a), key=a.count)}"
+
+    return tasks
+
+def generate_algorithmic_tasks_words(items, seed = 0, n_examples=300, min_length=4, max_length=4):
+    generator = random.Random(seed)
+    tasks = {}
+
+
+    tasks["algo_last"] = {}
+    for _ in range(n_examples):
+        length = generator.randint(min_length, max_length)
+        a = generator.sample(items, length)
+        tasks["algo_last"][", ".join(a)] = f"{a[-1]}"
+    
+    tasks["algo_first"] = {}
+    for _ in range(n_examples):
+        length = generator.randint(min_length, max_length)
+        a = generator.sample(items, length)
+        tasks["algo_first"][", ".join(a)] = f"{a[0]}"
+
+
+    tasks["algo_second"] = {}
+    for _ in range(n_examples):
+        length = generator.randint(min_length, max_length)
+        a = generator.sample(items, length)
+        tasks["algo_second"][", ".join(a)] = f"{a[1]}"
 
     # tasks["algo_sum"] = {}
     # for _ in range(n_examples):
@@ -68,7 +102,11 @@ def load_tasks():
     for g in glob.glob("data/itv/data/**/*.json"):
         tasks[os.path.basename(g).partition(".")[0]] = json.load(open(g))
 
-    tasks.update(generate_algorithmic_tasks())
+    # tasks.update(generate_algorithmic_tasks())
+
+    items = list(tasks["en_es"].keys())
+
+    tasks.update(generate_algorithmic_tasks_words(items))
 
     return tasks
 
@@ -220,7 +258,7 @@ def task_vector_mask(tokens, sep=1599, shift=None):
 
     return mask
 
-def make_act_adder(llama, tv, tokens, layer, length=1, sep=1599, shift=0):
+def make_act_adder(llama, tv, tokens, layer, length=1, sep=1599, shift=0, scale=1):
     mask = tokens == sep
 
     col_indices = jnp.arange(mask.shape[1])
@@ -240,7 +278,7 @@ def make_act_adder(llama, tv, tokens, layer, length=1, sep=1599, shift=0):
         )
     )
 
-    add_act = add_vector(llama, tv, layer, 1, position = positions)
+    add_act = add_vector(llama, tv, layer, scale, position = positions)
 
     return add_act
 
@@ -256,11 +294,12 @@ def get_tv(resids, tokens, sep=1599, shift=None):
 
 
 class ICLRunner:
-    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128, prompt=None):
+    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128, prompt=None, eval_size=2):
         self.task = task
         self.pairs = pairs
         self.seed = seed
         self.batch_size = batch_size
+        self.eval_batch_size = batch_size * eval_size
         self.n_shot = n_shot
         self.max_seq_len = max_seq_len
         
@@ -269,7 +308,7 @@ class ICLRunner:
         self.gen = random.Random(seed)
 
         self.train_pairs = [self.gen.sample(pairs, k=n_shot) for _ in range(batch_size)]
-        self.eval_pairs = [self.gen.sample(pairs, k=1) for _ in range(batch_size)]
+        self.eval_pairs = [self.gen.sample(pairs, k=1) for _ in range(self.eval_batch_size)]
 
         if prompt is None:
             self.prompt = "<|user|>\nFollow the pattern:\n{}"
@@ -342,7 +381,7 @@ class FeatureSearch:
         self.pad_token = pad_token
         self.prompt = prompt
 
-        self.runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt)
+        self.runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt, eval_size=1)
         
         self.train_inputs = tokenized_to_inputs(
             **self.runner.get_tokens(self.runner.train_pairs, tokenizer), llama=llama

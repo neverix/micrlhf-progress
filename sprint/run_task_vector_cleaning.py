@@ -72,13 +72,8 @@ pad = 0
 
 
 
-task_names = [
-    "en_es",
-    "es_en",
-    "antonyms",
-    "person_profession",
-    "present_simple_past_simple"
-]
+
+task_names = [x for x in tasks if x.startswith("algo")]
 n_seeds = 10
 
 # n_few_shots, batch_size, max_seq_len = 64, 64, 512
@@ -96,15 +91,17 @@ from micrlhf.utils.ito import grad_pursuit
 seed = 10
 
 layers = [2, 4, 6, 8, 10, 12, 14, 16]
-layers = [12]
+layers = [10, 12, 14]
 
 # layer = 12
 for task in tqdm(task_names):
     pairs = list(tasks[task].items())
 
-    n_shot = 40
+    n_shot = n_few_shots-1
+    if task.startswith("algo"):
+        n_shot = 16
 
-    runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_few_shots-1, max_seq_len=max_seq_len, seed=seed, prompt=prompt)
+    runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt)
 
 
     tokenized = runner.get_tokens([
@@ -123,7 +120,7 @@ for task in tqdm(task_names):
     logits = llama(inputs)
     
     zero_loss = logprob_loss(
-        logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=1 if task.startswith("algo") else 0, n_first=2, sep=sep, pad_token=0
+        logits.unwrap("batch", "seq", "vocabulary"), tokens, shift= 0, n_first=2, sep=sep, pad_token=0
     )
 
     print(
@@ -144,7 +141,7 @@ for task in tqdm(task_names):
         logits = add_act(inputs)
 
         tv_loss = logprob_loss(
-            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=1 if task.startswith("algo") else 0, n_first=2, sep=sep, pad_token=0
+            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
         )
 
         print(
@@ -158,7 +155,7 @@ for task in tqdm(task_names):
         logits = add_act(inputs)
 
         recon_loss = logprob_loss(
-            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=1 if task.startswith("algo") else 0, n_first=2, sep=sep, pad_token=0
+            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
         )
 
         print(
@@ -172,7 +169,7 @@ for task in tqdm(task_names):
         logits = add_act(inputs)
 
         ito_loss = logprob_loss(
-            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=1 if task.startswith("algo") else 0, n_first=2, sep=sep, pad_token=0
+            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
         )
 
         print(
@@ -192,14 +189,14 @@ for task in tqdm(task_names):
         logits = add_act(inputs)
 
         loss = logprob_loss(
-            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=1 if task.startswith("algo") else 0, n_first=2, sep=sep, pad_token=0
+            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
         )
 
         print(
             f"Recon fs: {task}, L: {layer}, Loss: {loss}"  
         )
 
-        with open("cleanup_results_fixed.jsonl", "a") as f:
+        with open("cleanup_results_algo.jsonl", "a") as f:
             item = {
                 "task": task,
                 "weights": w.tolist(),

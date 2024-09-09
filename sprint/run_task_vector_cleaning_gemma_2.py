@@ -73,7 +73,7 @@ pad = 0
 
 
 
-task_names = [x for x in tasks]
+task_names = [x for x in tasks if x.startswith("algo")]
 n_seeds = 10
 
 # n_few_shots, batch_size, max_seq_len = 64, 64, 512
@@ -90,14 +90,14 @@ from micrlhf.utils.ito import grad_pursuit
 
 seed = 10
 
-layers = list(range(10, 22, 2))
+layers = list(range(12, 24, 2))
 # layer = 12
 for task in tqdm(task_names):
     pairs = list(tasks[task].items())
 
     n_shot = n_few_shots-1
     if task.startswith("algo"):
-        n_shot = 8
+        n_shot = 16
 
     runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt)
 
@@ -193,7 +193,7 @@ for task in tqdm(task_names):
             f"Recon fs: {task}, L: {layer}, Loss: {loss}"  
         )
 
-        with open("cleanup_results_gemma_2_all.jsonl", "a") as f:
+        with open("cleanup_results_gemma_2_algo.jsonl", "a") as f:
             item = {
                 "task": task,
                 "weights": w.tolist(),
