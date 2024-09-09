@@ -473,8 +473,8 @@ class FeatureSearch:
         for _ in (bar := trange(self.iterations)):
             loss, weights, opt_state, metrics = self.train_step(weights, opt_state, optimizer)
 
-            if metrics["loss"] < min_loss:
-                min_loss = metrics["loss"]
+            if metrics["l0"] < min_loss:
+                min_loss = metrics["l0"]
                 early_stopping_counter = 0
 
             tk = jax.lax.top_k(weights, 2)

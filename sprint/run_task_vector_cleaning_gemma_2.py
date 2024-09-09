@@ -73,7 +73,7 @@ pad = 0
 
 
 
-task_names = [x for x in tasks if x.startswith("algo")]
+task_names = [x for x in tasks]
 n_seeds = 10
 
 # n_few_shots, batch_size, max_seq_len = 64, 64, 512
@@ -90,7 +90,7 @@ from micrlhf.utils.ito import grad_pursuit
 
 seed = 10
 
-layers = list(range(12, 24, 2))
+layers = list(range(14, 25, 2))
 # layer = 12
 for task in tqdm(task_names):
     pairs = list(tasks[task].items())
@@ -126,7 +126,7 @@ for task in tqdm(task_names):
     )
 
     for layer in layers:
-        sae = get_dm_res_sae(layer)
+        sae = get_dm_res_sae(layer, load_65k=True)
 
         resids = all_resids[layer].value.unwrap(
             "batch", "seq", "embedding"
