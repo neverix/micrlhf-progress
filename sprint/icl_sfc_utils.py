@@ -568,63 +568,56 @@ class Circuitizer(eqx.Module):
         return out_masks, total_nodes
 
     @eqx.filter_jit
-    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"]):
+    def ablate_nodes(self, threshold, ablate_resids=False, topk=None, inverse=False):
         saes = self.saes
         ie_resid = self.ie_resid
         ie_attn, ie_transcoder = self.ie_attn, self.ie_transcoder
         llama_ablated = self.llama
         n_nodes = {0: 0}
-
-        if layers is None:
-            layers = self.layers
-
-        for layer in layers:
+        for layer in self.layers:
             block_selection = llama_ablated.select().at_instances_of(LlamaBlock).pick_nth_selected(layer)
 
             def converter(block):
                 n_nodes_resid, n_nodes_attn, n_nodes_mlp = 0, 0, 0
 
-                if "resid" in sae_types:
+                if ablate_resids:
                     try:
                         resid = saes[(layer, "resid")]
                         mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold, topk, inverse=inverse)
                         block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, self.masks), x]))
                     except KeyError:
                         pass
-                
-                if "attn_out" in sae_types:
-                    try:
-                        attn_out = saes[(layer, "attn_out")]
-                        mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk, inverse=inverse)
-                        block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, self.masks)]))
-                    except KeyError:
-                        pass
+                try:
+                    attn_out = saes[(layer, "attn_out")]
+                    mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk, inverse=inverse)
+                    block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, self.masks)]))
+                except KeyError:
+                    pass
 
-                if "transcoder" in sae_types:
-                    try:
-                        transcoder = saes[(layer, "transcoder")]
-                        mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk, inverse=inverse)
-                        block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, self.masks, x))
-                    except KeyError:
-                        pass
+                try:
+                    transcoder = saes[(layer, "transcoder")]
+                    mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk, inverse=inverse)
+                    block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, self.masks, x))
+                except KeyError:
+                    pass
                 n_nodes[0] += n_nodes_attn + n_nodes_mlp + n_nodes_resid
                 return block
 
             llama_ablated = block_selection.apply(converter)
         return self.ablated_metric(llama_ablated), n_nodes[0]
 
-    def run_ablated_metrics(self, thresholds, topks=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"]):
+    def run_ablated_metrics(self, thresholds, topks=None, inverse=False):
         n_nodes_counts = []
         ablated_metrics = []
 
         if topks is not None:
             for topk in topks:
-                abl_met, n_nodes = self.ablate_nodes(0, topk=topk, inverse=inverse, layers=layers, sae_types=sae_types)
+                abl_met, n_nodes = self.ablate_nodes(0, ablate_resids=True, topk=topk, inverse=inverse)
                 ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
         else:
             for threshold in tqdm(thresholds):
-                abl_met, n_nodes = self.ablate_nodes(threshold, inverse=inverse, layers=layers, sae_types=sae_types)
+                abl_met, n_nodes = self.ablate_nodes(threshold, ablate_resids=True, inverse=inverse)
                 ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
 
@@ -694,4 +687,4 @@ class Circuitizer(eqx.Module):
             for i, e in zip(indices.tolist(), effects.tolist()):
                 top_effects.append((e, key, i))
         top_effects.sort(reverse=True)
-        return top_effects[:k]
+        return top_effects[:k]  
