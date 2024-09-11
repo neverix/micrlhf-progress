@@ -97,7 +97,7 @@ def generate_algorithmic_tasks_words(items, seed = 0, n_examples=300, min_length
 
 
 def load_tasks():
-    # subprocess.run(["git", "clone", "https://github.com/roeehendel/icl_task_vectors data/itv"])
+    subprocess.run(["git", "clone", "https://github.com/roeehendel/icl_task_vectors", "data/itv"])
     tasks = {}
     for g in glob.glob("data/itv/data/**/*.json"):
         tasks[os.path.basename(g).partition(".")[0]] = json.load(open(g))
