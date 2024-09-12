@@ -64,7 +64,7 @@ def load_saes(layers):
             pass
     return saes
 
-def sfc_simple(grad, resid, target, sae):
+def sfc_simple(grad, resid, target, sae, ablate_to=0):
     pre_relu, post_relu, recon = sae_encode_gated(sae, resid)
 
     post_relu = post_relu.astype(jnp.float32)
@@ -98,23 +98,26 @@ class AblatedModule(pz.Layer):
     module: pz.Layer
     sae: dict
     keep_features: Dict[str, jax.typing.ArrayLike]
+    ablate_to: Dict[str, jax.typing.ArrayLike]
     masks: Dict[str, jax.typing.ArrayLike] = dataclasses.field(default_factory=dict)
 
     @classmethod
-    def wrap(self, sae, ablated_features, masks, module=None):
+    def wrap(self, sae, ablated_features, masks, module=None, ablate_to=None):
         if module is None:
             module = pz.nn.Identity()
-        return AblatedModule(module, sae, ablated_features, masks)
+        if ablate_to is None:
+            ablate_to = {k: 0 for k in ablated_features}
+        return AblatedModule(module, sae, ablated_features, ablate_to, masks)
 
     def __call__(self, x):
         inp = x.unwrap("batch", "seq", "embedding")
         out = self.module(x)
         out = out.unwrap("batch", "seq", "embedding")
-        result = 0
+        result = out
         for mask, mask_values in self.masks.items():
             _, _, recon = sae_encode_gated(self.sae, inp)
             error = out - recon
-            _, _, recon_ablated = sae_encode_gated(self.sae, inp, keep_features=self.keep_features[mask])
+            _, _, recon_ablated = sae_encode_gated(self.sae, inp, keep_features=self.keep_features[mask], ablate_to=self.ablate_to[mask])
             res = recon_ablated + error
             res = res * mask_values[..., None]
             result = result * (1 - mask_values[..., None]) + res
@@ -546,29 +549,54 @@ class Circuitizer(eqx.Module):
             return f(resid)
 
     @eqx.filter_jit
-    def ablated_metric(self, llama_ablated):
-        ablated_logits = llama_ablated(self.llama_inputs)
-        return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, self.train_tokens, use_softmax=True)
+    def ablated_metric(self, llama_ablated, runner=None):
 
-    def mask_ie(self, ie, threshold, topk=None, inverse=False):
+        if runner is not None:
+            runner, tokenizer = runner
+            tokens = runner.get_tokens(
+                runner.train_pairs, tokenizer
+            )["input_ids"]
+            
+            tokens_wrapped = pz.nx.wrap(tokens, "batch", "seq")
+            inputs = self.llama.inputs.from_basic_segments(tokens_wrapped)
+
+        else:
+            inputs = self.llama_inputs
+            tokens = self.train_tokens
+
+        ablated_logits = llama_ablated(inputs)
+        return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, tokens, use_softmax=True)
+
+    def mask_ie(self, ie, threshold, topk=None, inverse=False, token_types=None, do_abs=True):
         out_masks = {}
         total_nodes = 0
+
+        if token_types is None:
+            token_types = self.masks.keys()
+
         for mask in self.masks:
             ie_averaged = self.mask_average(ie, mask)
-            ie_averaged = jnp.abs(ie_averaged)
-            if topk is not None:
-                i, w = jnp.lax.top_k(ie_averaged, topk)
-                out_masks[mask] = jnp.zeros_like(ie_averaged).astype(bool).at[i].set(1)
-            else:
-                out_masks[mask] = jnp.abs(ie_averaged) > threshold
+            # ie_averaged = jnp.abs(ie_averaged)
 
-            if inverse:
-                out_masks[mask] = ~out_masks[mask]
+            if mask not in token_types:
+                out_masks[mask] = jnp.ones_like(ie_averaged).astype(bool)
+            else:
+                if topk is not None:
+                    i, w = jnp.lax.top_k(ie_averaged, topk)
+                    out_masks[mask] = jnp.zeros_like(ie_averaged).astype(bool).at[i].set(1)
+                else:
+                    if do_abs:
+                        out_masks[mask] = jnp.abs(ie_averaged) > threshold
+                    else:
+                        out_masks[mask] = ie_averaged > threshold
+                if inverse:
+                    out_masks[mask] = ~out_masks[mask]
+
             total_nodes += out_masks[mask].sum()
         return out_masks, total_nodes
 
     @eqx.filter_jit
-    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"]):
+    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False):
         saes = self.saes
         ie_resid = self.ie_resid
         ie_attn, ie_transcoder = self.ie_attn, self.ie_transcoder
@@ -587,44 +615,73 @@ class Circuitizer(eqx.Module):
                 if "resid" in sae_types:
                     try:
                         resid = saes[(layer, "resid")]
-                        mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold, topk, inverse=inverse)
-                        block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, self.masks), x]))
+                        mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs)
+
+                        if mean_ablate:
+                            _, weights, _ = sae_encode_gated(resid, self.resids_pre[layer])
+                            avg_weights = {
+                                k: self.mask_average(weights, k) for k in self.masks
+                            }
+
+                        else:
+                            avg_weights = None
+
+                        block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, self.masks, ablate_to=avg_weights), x]))
                     except KeyError:
                         pass
                 
                 if "attn_out" in sae_types:
                     try:
                         attn_out = saes[(layer, "attn_out")]
-                        mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk, inverse=inverse)
-                        block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, self.masks)]))
+                        mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs)
+
+                        if mean_ablate:
+                            _, weights, _ = sae_encode_gated(attn_out, self.resids_mid[layer] - self.resids_pre[layer])
+                            avg_weights = {
+                                k: self.mask_average(weights, k) for k in self.masks
+                            }
+
+                        else:
+                            avg_weights = None
+
+                        block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, self.masks, ablate_to=avg_weights)]))
                     except KeyError:
                         pass
 
                 if "transcoder" in sae_types:
                     try:
                         transcoder = saes[(layer, "transcoder")]
-                        mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk, inverse=inverse)
-                        block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, self.masks, x))
+                        mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs)
+
+                        if mean_ablate:
+                            _, weights, _ = sae_encode_gated(transcoder, self.mlp_normalize(layer, self.resids_mid[layer]))
+                            avg_weights = {
+                                k: self.mask_average(weights, k) for k in self.masks
+                            }
+                        else:
+                            avg_weights = None
+
+                        block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, self.masks, x, ablate_to=avg_weights))
                     except KeyError:
                         pass
                 n_nodes[0] += n_nodes_attn + n_nodes_mlp + n_nodes_resid
                 return block
 
             llama_ablated = block_selection.apply(converter)
-        return self.ablated_metric(llama_ablated), n_nodes[0]
+        return self.ablated_metric(llama_ablated, runner=runner), n_nodes[0]
 
-    def run_ablated_metrics(self, thresholds, topks=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"]):
+    def run_ablated_metrics(self, thresholds, topks=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False):
         n_nodes_counts = []
         ablated_metrics = []
 
         if topks is not None:
             for topk in topks:
-                abl_met, n_nodes = self.ablate_nodes(0, topk=topk, inverse=inverse, layers=layers, sae_types=sae_types)
+                abl_met, n_nodes = self.ablate_nodes(0, topk=topk, inverse=inverse, layers=layers, sae_types=sae_types, runner=runner, token_types=token_types, do_abs=do_abs, mean_ablate=mean_ablate)
                 ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
         else:
             for threshold in tqdm(thresholds):
-                abl_met, n_nodes = self.ablate_nodes(threshold, inverse=inverse, layers=layers, sae_types=sae_types)
+                abl_met, n_nodes = self.ablate_nodes(threshold, inverse=inverse, layers=layers, sae_types=sae_types, runner=runner, token_types=token_types, do_abs=do_abs, mean_ablate=mean_ablate)
                 ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
 

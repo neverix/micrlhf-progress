@@ -170,7 +170,7 @@ def sae_encode_threshold(sae, vector, pre_relu=None):
 
     return pre_relu, feature_acts, recon
 
-def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None):
+def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None, ablate_to=0):
     inputs = vector
 
     if pre_relu is None:
@@ -183,7 +183,7 @@ def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_
     post_relu = (pre_relu > 0) * jax.nn.relu((pre_relu - sae["b_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
 
     if keep_features is not None:
-        post_relu = post_relu * keep_features
+        post_relu = post_relu * keep_features + ablate_to * (1 - keep_features)
         # axes = tuple(range(post_relu.ndim - 1))
         
         # post_relu = jax.vmap(jax.vmap(lambda a, b: a.at[keep_features].set(b[keep_features]), in_axes=(0, 0), out_axes=0),
