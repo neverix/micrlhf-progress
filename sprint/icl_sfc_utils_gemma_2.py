@@ -294,19 +294,24 @@ class Circuitizer(eqx.Module):
             ])
         )
 
-        def attention_addition(x, layer):
+        def attention_addition(layer):
             return pz.nx.wrap(
-                x.unwrap("batch", "seq", "kv_heads", "q_rep", "projection") + additions_attn[layer],
+                additions_attn[layer],
                 "batch", "seq", "kv_heads", "q_rep", "projection"
             )
+            # return pz.nx.wrap(
+            #     x.unwrap("batch", "seq", "kv_heads", "q_rep", "projection") + additions_attn[layer],
+            #     "batch", "seq", "kv_heads", "q_rep", "projection"
+            # )
 
         #TODO
-        make_additions = make_additions.select().at_instances_of(LlamaAttention).apply_with_selected_index(lambda l, b: b.attn_value_to_output.select().at_instances_of(pz.nn.Linear).apply_with_selected_index(lambda i, x: pz.nn.Sequential([
-            # ActivationAddition(pz.nx.wrap(additions_attn[i], *(("batch",) if batched else ()), 'kv_heads', 'q_rep', 'projection', 'seq'), "all"),
-
-                # partial(attention_addition, layer=l),
-                x
-        ])))
+        make_additions = make_additions.select().at_instances_of(LlamaAttention).apply_with_selected_index(lambda l, b:
+            b.select().at(lambda x: x.attn_value_to_output).at_instances_of(pz.nn.Linear).apply_with_selected_index(lambda i, x:                
+                pz.nn.Sequential([
+                    ActivationAddition(attention_addition( layer=l), "all"),
+                    x,
+                ])
+            ))
 
         make_additions = make_additions.select().at_instances_of(LlamaMLP).apply_with_selected_index(lambda i, x:
             pz.nn.Sequential([
@@ -328,9 +333,8 @@ class Circuitizer(eqx.Module):
         additions_mlp = [jnp.zeros(tokens.shape + (self.llama.config.hidden_size,)) for _ in range(self.llama.config.num_layers)]
         batched = tokens.ndim > 1
 
-        # (metric, (logits, resids_pre, resids_attn, resids_mlp_in, resids_mlp_out)), (grad_pre, grad_att, grad_mlp) = jax.value_and_grad(self.run_with_add, argnums=(0, 1, 2), has_aux=True)(additions_resid, additions_attn, additions_mlp, tokens, metric_fn, batched=batched)
-        
-
+        # TODO
+        (metric, (logits, resids_pre, resids_attn, resids_mlp_in, resids_mlp_out)), (grad_pre, grad_att, grad_mlp) = jax.value_and_grad(self.run_with_add, argnums=(0, 1, 2), has_aux=True)(additions_resid, additions_attn, additions_mlp, tokens, metric_fn, batched=batched)
         self.run_with_add(additions_resid, additions_attn, additions_mlp, tokens, metric_fn, batched=batched)
 
 
