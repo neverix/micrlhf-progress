@@ -55,11 +55,11 @@ def load_saes(layers):
         except KeyError:
             pass
         try:
-            saes[(layer, "resid")] = get_dm_res_sae(layer=layer, type="res")
+            saes[(layer, "resid")] = get_dm_res_sae(layer=layer, load_65k=True, type="res")
         except KeyError:
             pass
         try:
-            saes[(layer, "transcoder")] = get_dm_res_sae(layer=layer, type="transcoder")
+            saes[(layer, "transcoder")] = get_dm_res_sae(layer=layer, load_65k=False, type="transcoders")
         except KeyError:
             pass
     return saes
@@ -91,12 +91,22 @@ pad = 0
 def metric_fn(logits, resids, tokens, use_softmax=False):
     return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
 
+def unflatten_attn_resids(x, expected_shape):
+    b, s = x.shape[:2]
+
+    kv_heads, q_rep, head_dim = expected_shape
+
+    return pz.nx.wrap(x.reshape(b, s, kv_heads, q_rep, head_dim), "batch", "seq", "kv_heads", "q_rep", "projection")
+
 
 
 from micrlhf.llama import LlamaMLP
 from typing import Dict, List
 import dataclasses
 
+def flatten_attn_resids(x):
+        return x.untag("kv_heads", "q_rep", "projection").reshape(-1).tag("embedding").unwrap(
+        "batch", "seq", "embedding")
 
 @pz.pytree_dataclass
 class AblatedModule(pz.Layer):
@@ -105,19 +115,28 @@ class AblatedModule(pz.Layer):
     keep_features: Dict[str, jax.typing.ArrayLike]
     ablate_to: Dict[str, jax.typing.ArrayLike]
     masks: Dict[str, jax.typing.ArrayLike] = dataclasses.field(default_factory=dict)
+    attn_shape: List[int] = dataclasses.field(default_factory=list)
 
     @classmethod
-    def wrap(self, sae, ablated_features, masks, module=None, ablate_to=None):
+    def wrap(self, sae, ablated_features, masks, module=None, ablate_to=None, attn_shape=None):
         if module is None:
             module = pz.nn.Identity()
         if ablate_to is None:
             ablate_to = {k: 0 for k in ablated_features}
-        return AblatedModule(module, sae, ablated_features, ablate_to, masks)
+        return AblatedModule(module, sae, ablated_features, ablate_to, masks, attn_shape)
 
     def __call__(self, x):
-        inp = x.unwrap("batch", "seq", "embedding")
+        if self.attn_shape is not None:
+            inp = flatten_attn_resids(x)
+        else:
+            inp = x.unwrap("batch", "seq", "embedding")
         out = self.module(x)
-        out = out.unwrap("batch", "seq", "embedding")
+
+        if self.attn_shape is not None:
+            out = flatten_attn_resids(out)
+        else:
+            out = out.unwrap("batch", "seq", "embedding")
+
         result = out
         _, _, recon = sae_encode_threshold(self.sae, inp)
         error = out - recon
@@ -127,7 +146,11 @@ class AblatedModule(pz.Layer):
             res = res * mask_values[..., None]
             result = result * (1 - mask_values[..., None]) + res
         # return out
-        return pz.nx.wrap(result, "batch", "seq", "embedding")
+
+        if self.attn_shape is not None:
+            return unflatten_attn_resids(result, self.attn_shape)
+        else:
+            return pz.nx.wrap(result, "batch", "seq", "embedding")
 
 class Circuitizer(eqx.Module):
     saes: dict
@@ -155,10 +178,14 @@ class Circuitizer(eqx.Module):
 
     metric_value: jax.typing.ArrayLike
     resids_pre: List[jax.typing.ArrayLike]
-    resids_mid: List[jax.typing.ArrayLike]
-    qk: List[jax.typing.ArrayLike]
+    resids_attn: List[jax.typing.ArrayLike]
+    resids_mlp_in: List[jax.typing.ArrayLike]
+    resids_mlp_out: List[jax.typing.ArrayLike]
+    
     grad_pre: List[jax.typing.ArrayLike]
-    grad_mid: List[jax.typing.ArrayLike]
+    grad_attn: List[jax.typing.ArrayLike]
+    grad_mlp: List[jax.typing.ArrayLike]
+
     mlp_rms: List[jax.typing.ArrayLike]
     
 
@@ -198,23 +225,24 @@ class Circuitizer(eqx.Module):
         self.run_metrics()
         print("Setting up RMS...")
         self.mlp_rms = [self.get_rms_block(layer, 1) for layer in trange(llama.config.num_layers)]
-        # print("Loading SAEs...")
-        # self.saes = load_saes(self.layers)
-        # print("Running node IEs...")
-        # self.run_node_ies()
+        print("Loading SAEs...")
+        self.saes = load_saes(self.layers)
+        print("Running node IEs...")
+        self.run_node_ies()
 
     def get_sae(self, layer, label="resid"):
         return self.saes[(layer, label)]
-
-
+    
     def run_metrics(self):
-        metric_value, resids_pre, resids_mid, qk, grad_pre, grad_mid = self.get_metric_resid_grad(self.train_tokens, metric_fn)
+        metric_value, resids_pre, resids_attn, resids_mlp_in, resids_mlp_out, grad_pre, grad_attn, grad_mlp = self.get_metric_resid_grad(self.train_tokens, metric_fn)
         self.metric_value = metric_value
         self.resids_pre = resids_pre
-        self.resids_mid = resids_mid
-        self.qk = qk
+        self.resids_attn = resids_attn
+        self.resids_mlp_in = resids_mlp_in
+        self.resids_mlp_out = resids_mlp_out
         self.grad_pre = grad_pre
-        self.grad_mid = grad_mid
+        self.grad_attn = grad_attn
+        self.grad_mlp = grad_mlp
 
     def run_node_ies(self):
         self.ie_attn = {}
@@ -234,9 +262,15 @@ class Circuitizer(eqx.Module):
 
         layers = self.layers
         for l in tqdm(layers):
-            r_pre, r_mid, g_mid = self.resids_pre[l], self.resids_mid[l], self.grad_mid[l]
+            r_attn, g_attn = self.resids_attn[l], self.grad_attn[l]
+
+            b, s = r_attn.shape[:2]
+
+            r_attn = r_attn.reshape(b, s, -1)
+            g_attn = g_attn.reshape(b, s, -1)
+
             sae = self.get_sae(layer=l, label="attn_out")
-            indirect_effects, indirect_effects_error, sae_grad, error = sfc_simple(g_mid, r_mid - r_pre, r_mid - r_pre, sae)
+            indirect_effects, indirect_effects_error, sae_grad, error = sfc_simple(g_attn, r_attn, r_attn, sae)
             # display((indirect_effects > 0).sum(-1))
             self.ie_attn[l] = indirect_effects
             self.ie_error_attn[l] = indirect_effects_error
@@ -255,9 +289,9 @@ class Circuitizer(eqx.Module):
             self.sae_error_resid[l] = error
 
         for l in tqdm(layers[:-1]):
-            r_mid, r_pre, g_pre = self.resids_mid[l], self.resids_pre[l + 1], self.grad_pre[l + 1]
+            r_out, r_in, g_mlp = self.resids_mlp_out[l], self.resids_mlp_in[l], self.grad_pre[l]
             sae = self.get_sae(layer=l, label="transcoder")
-            indirect_effects, indirect_effects_error, sae_grad, error = sfc_simple(g_pre, self.mlp_normalize(l, r_mid), r_pre - r_mid, sae)
+            indirect_effects, indirect_effects_error, sae_grad, error = sfc_simple(g_mlp, r_in, r_out, sae)
             # display((indirect_effects != 0).sum(-1))
             self.ie_transcoder[l] = indirect_effects
             self.ie_error_transcoder[l] = indirect_effects_error
@@ -272,12 +306,12 @@ class Circuitizer(eqx.Module):
                 x
             ])
         )
-        get_resids = get_resids.select().at_instances_of(LlamaAttention).apply_with_selected_index(lambda l, b: b.attn_value_to_output.select().at_instances_of(pz.nn.Linear).apply_with_selected_index(lambda i, x: pz.nn.Sequential([
+        get_resids = get_resids.select().at_instances_of(LlamaAttention).apply_with_selected_index(lambda l, b: b.select().at(lambda x: x.attn_value_to_output).at_instances_of(pz.nn.Linear).apply_with_selected_index(lambda i, x: pz.nn.Sequential([
             pz.de.TellIntermediate.from_config(tag=f"resid_attn_{l}"),
             x,
         ])))
 
-        get_resids = self.llama.select().at_instances_of(LlamaMLP).apply_with_selected_index(lambda i, x:
+        get_resids = get_resids.select().at_instances_of(LlamaMLP).apply_with_selected_index(lambda i, x:
             pz.nn.Sequential([
                 pz.de.TellIntermediate.from_config(tag=f"resid_mlp_in_{i}"),
                 x,
@@ -320,9 +354,11 @@ class Circuitizer(eqx.Module):
             ])
         )
         
-        
+
         tokens_wrapped = pz.nx.wrap(tokens, "batch", "seq")
         logits, resids = make_additions(self.llama.inputs.from_basic_segments(tokens_wrapped))
+
+        # print([x.value for x in resids])
         return metric(logits.unwrap("batch", "seq", "vocabulary"), resids, tokens), (logits, resids[::4], resids[1::4], resids[2::4], resids[3::4])
 
 
@@ -335,13 +371,6 @@ class Circuitizer(eqx.Module):
 
         # TODO
         (metric, (logits, resids_pre, resids_attn, resids_mlp_in, resids_mlp_out)), (grad_pre, grad_att, grad_mlp) = jax.value_and_grad(self.run_with_add, argnums=(0, 1, 2), has_aux=True)(additions_resid, additions_attn, additions_mlp, tokens, metric_fn, batched=batched)
-        self.run_with_add(additions_resid, additions_attn, additions_mlp, tokens, metric_fn, batched=batched)
-
-
-        print(
-            resids_pre[0].value, resids_attn[0].value, resids_mlp_in[0].value, resids_mlp_out[0].value
-        )
-        
         
         return (
             metric,
@@ -666,6 +695,8 @@ class Circuitizer(eqx.Module):
             def converter(block):
                 n_nodes_resid, n_nodes_attn, n_nodes_mlp = 0, 0, 0
 
+                attn_shape = None
+
                 if "resid" in sae_types:
                     try:
                         resid = saes[(layer, "resid")]
@@ -680,7 +711,9 @@ class Circuitizer(eqx.Module):
                         else:
                             avg_weights = None
 
-                        block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, self.masks, ablate_to=avg_weights), x]))
+                        attn_shape = None
+
+                        block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, self.masks, ablate_to=avg_weights, attn_shape=attn_shape), x]))
                     except KeyError:
                         pass
                 
@@ -698,7 +731,9 @@ class Circuitizer(eqx.Module):
                         else:
                             avg_weights = None
 
-                        block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, self.masks, ablate_to=avg_weights)]))
+                        attn_shape = (4, 2, 256)
+
+                        block = block.select().at_instances_of(LlamaAttention).apply(lambda x: x.select().at(lambda x: x.attn_value_to_output).at_instances_of(pz.nn.Linear).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(attn_out, mask_attn_out, self.masks, ablate_to=avg_weights, attn_shape=attn_shape), x])))
                     except KeyError:
                         pass
 
@@ -715,7 +750,9 @@ class Circuitizer(eqx.Module):
                         else:
                             avg_weights = None
 
-                        block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, self.masks, x, ablate_to=avg_weights))
+                        attn_shape = None
+
+                        block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, self.masks, x, ablate_to=avg_weights, attn_shape=attn_shape))
                     except KeyError:
                         pass
                 n_nodes[0] += n_nodes_attn + n_nodes_mlp + n_nodes_resid

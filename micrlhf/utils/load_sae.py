@@ -80,14 +80,31 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
     return sae_weights
 
 def get_dm_res_sae(layer, load_65k=False, type="res"):
+    fs = HfFileSystem()
     key = f"dm_gemma2_2b_{type}_{layer}"
     if key in sae_cache:
         return sae_cache[key]
-    if load_65k:
-        url = f"google/gemma-scope-2b-pt-{type}/layer_{layer}/width_65k/canonical/params.npz"
-    else:
-        url = f"google/gemma-scope-2b-pt-{type}/layer_{layer}/width_16k/canonical/params.npz"
-    fs = HfFileSystem()
+
+    width = 65 if load_65k else 16
+
+    rep_url = f"google/gemma-scope-2b-pt-{type}/layer_{layer}/width_{width}k/*"
+    if type == "transcoder":
+        rep_url = f"google/gemma-scope-2b-pt-{type}/layer_{layer}/width_{width}k/*"
+
+    # if type != "res":
+    l0_versions = list(
+        fs.glob(rep_url)
+    )
+
+    l0_versions = sorted(
+        l0_versions, key=lambda x: int(x.split("average_l0_")[1])
+    )
+    url = l0_versions[2]
+    url = url + "/params.npz"
+
+    # else:
+        # url = f"google/gemma-scope-2b-pt-{type}/layer_{layer}/width_{width}k/canonical/params.npz"
+
     os.makedirs("models/sae", exist_ok=True)
     if load_65k:
         fname = f"models/sae/dm_gemma2_2b_{type}_{layer}_65k.npz"
@@ -168,7 +185,7 @@ def sae_encode_threshold(sae, vector, pre_relu=None, keep_features=None, ablate_
     feature_acts = post_relu * (pre_relu > sae["threshold"])
 
     if keep_features is not None:
-        post_relu = post_relu * keep_features + ablate_to * (1 - keep_features)
+        feature_acts = feature_acts * keep_features + ablate_to * (1 - keep_features)
 
     recon = feature_acts @ sae["W_dec"] + sae["b_dec"]
 
