@@ -79,20 +79,20 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
 
     return sae_weights
 
-def get_dm_res_sae(layer, load_65k=False):
-    key = f"dm_gemma2_2b_res_{layer}"
+def get_dm_res_sae(layer, load_65k=False, type="res"):
+    key = f"dm_gemma2_2b_{type}_{layer}"
     if key in sae_cache:
         return sae_cache[key]
     if load_65k:
-        url = f"google/gemma-scope-2b-pt-res/layer_{layer}/width_65k/canonical/params.npz"
+        url = f"google/gemma-scope-2b-pt-{type}/layer_{layer}/width_65k/canonical/params.npz"
     else:
-        url = f"google/gemma-scope-2b-pt-res/layer_{layer}/width_16k/canonical/params.npz"
+        url = f"google/gemma-scope-2b-pt-{type}/layer_{layer}/width_16k/canonical/params.npz"
     fs = HfFileSystem()
     os.makedirs("models/sae", exist_ok=True)
     if load_65k:
-        fname = f"models/sae/dm_gemma2_2b_res_{layer}_65k.npz"
+        fname = f"models/sae/dm_gemma2_2b_{type}_{layer}_65k.npz"
     else:
-        fname = f"models/sae/dm_gemma2_2b_res_{layer}.npz"
+        fname = f"models/sae/dm_gemma2_2b_{type}_{layer}.npz"
 
     if not os.path.exists(fname):
         with open(fname, "wb") as f:
@@ -157,7 +157,7 @@ def weights_to_resid(weights, sae):
     # recon = recon.astype('bfloat16')
     return recon.astype(weights.dtype)
 
-def sae_encode_threshold(sae, vector, pre_relu=None):
+def sae_encode_threshold(sae, vector, pre_relu=None, keep_features=None, ablate_to=0):
     inputs = vector
 
     if pre_relu is None:
@@ -166,6 +166,10 @@ def sae_encode_threshold(sae, vector, pre_relu=None):
     post_relu = jax.nn.relu(pre_relu)
 
     feature_acts = post_relu * (pre_relu > sae["threshold"])
+
+    if keep_features is not None:
+        post_relu = post_relu * keep_features + ablate_to * (1 - keep_features)
+
     recon = feature_acts @ sae["W_dec"] + sae["b_dec"]
 
     return pre_relu, feature_acts, recon
@@ -173,14 +177,19 @@ def sae_encode_threshold(sae, vector, pre_relu=None):
 def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None, ablate_to=0):
     inputs = vector
 
+    s = jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"]
+    
     if pre_relu is None:
         if "norm_factor" in sae:
             inputs = inputs * sae["norm_factor"]
 
         pre_relu = inputs @ sae["W_enc"]
         pre_relu = pre_relu +sae["b_enc"]
-    
-    post_relu = (pre_relu > 0) * jax.nn.relu((pre_relu - sae["b_enc"]) * jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"] + sae["b_gate"])   
+        pre_relu = pre_relu * s
+
+    post_relu = jax.nn.relu(pre_relu)
+    threshold = jnp.maximum(0, sae["b_gate"] - sae["b_enc"] * s)
+    post_relu = (post_relu > threshold) * post_relu
 
     if keep_features is not None:
         post_relu = post_relu * keep_features + ablate_to * (1 - keep_features)
