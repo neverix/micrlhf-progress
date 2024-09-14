@@ -1,7 +1,7 @@
 import jax
 import equinox as eqx
 import jax.numpy as jnp
-from micrlhf.llama import LlamaBlock, LlamaAttention, LlamaInputs
+from micrlhf.llama import LlamaBlock, LlamaAttention, LlamaInputs, LlamaMLP
 from micrlhf.utils.activation_manipulation import ActivationAddition, wrap_vector
 from functools import partial
 import jax.numpy as jnp
@@ -11,7 +11,7 @@ import numpy as np
 import jax
 
 from micrlhf.llama import LlamaTransformer
-from micrlhf.utils.load_sae import get_nev_it_sae_suite, sae_encode_gated, weights_to_resid, resids_to_weights
+from micrlhf.utils.load_sae import get_dm_res_sae, sae_encode_threshold
 from typing import List, Callable, Dict
 from transformers import AutoTokenizer
 from sprint.task_vector_utils import load_tasks, ICLRunner
@@ -51,21 +51,21 @@ def load_saes(layers):
     saes = {}
     for layer in tqdm(layers):
         try:
-            saes[(layer, "attn_out")] = get_nev_it_sae_suite(layer=layer, label="attn_out")
+            saes[(layer, "attn_out")] = get_dm_res_sae(layer=layer, load_65k=True, type="att")
         except KeyError:
             pass
         try:
-            saes[(layer, "resid")] = get_nev_it_sae_suite(layer=layer, label="residual")
+            saes[(layer, "resid")] = get_dm_res_sae(layer=layer, type="res")
         except KeyError:
             pass
         try:
-            saes[(layer, "transcoder")] = get_nev_it_sae_suite(layer=layer, label="transcoder")
+            saes[(layer, "transcoder")] = get_dm_res_sae(layer=layer, type="transcoder")
         except KeyError:
             pass
     return saes
 
 def sfc_simple(grad, resid, target, sae, ablate_to=0):
-    pre_relu, post_relu, recon = sae_encode_gated(sae, resid)
+    pre_relu, post_relu, recon = sae_encode_threshold(sae, resid)
 
     # post_relu = post_relu.astype(jnp.float32)
     pre_relu = pre_relu.astype(jnp.float32)
@@ -73,7 +73,7 @@ def sfc_simple(grad, resid, target, sae, ablate_to=0):
     # f = partial(weights_to_resid, sae=sae)
     
     def f(pre_relu):
-        _, _, recon = sae_encode_gated(sae, None, pre_relu=pre_relu)
+        _, _, recon = sae_encode_threshold(sae, None, pre_relu=pre_relu)
         return recon
 
     grad = grad.astype(jnp.float32)
@@ -119,10 +119,10 @@ class AblatedModule(pz.Layer):
         out = self.module(x)
         out = out.unwrap("batch", "seq", "embedding")
         result = out
-        _, _, recon = sae_encode_gated(self.sae, inp)
+        _, _, recon = sae_encode_threshold(self.sae, inp)
         error = out - recon
         for mask, mask_values in self.masks.items():
-            _, _, recon_ablated = sae_encode_gated(self.sae, inp, keep_features=self.keep_features[mask], ablate_to=self.ablate_to[mask])
+            _, _, recon_ablated = sae_encode_threshold(self.sae, inp, keep_features=self.keep_features[mask], ablate_to=self.ablate_to[mask])
             res = recon_ablated + error
             res = res * mask_values[..., None]
             result = result * (1 - mask_values[..., None]) + res
@@ -198,10 +198,10 @@ class Circuitizer(eqx.Module):
         self.run_metrics()
         print("Setting up RMS...")
         self.mlp_rms = [self.get_rms_block(layer, 1) for layer in trange(llama.config.num_layers)]
-        print("Loading SAEs...")
-        self.saes = load_saes(self.layers)
-        print("Running node IEs...")
-        self.run_node_ies()
+        # print("Loading SAEs...")
+        # self.saes = load_saes(self.layers)
+        # print("Running node IEs...")
+        # self.run_node_ies()
 
     def get_sae(self, layer, label="resid"):
         return self.saes[(layer, label)]
@@ -265,51 +265,89 @@ class Circuitizer(eqx.Module):
             self.sae_error_transcoder[l] = error
 
     @eqx.filter_jit
-    def run_with_add(self, additions_pre, additions_mid, tokens, metric, batched=False):
+    def run_with_add(self, additions_pre, additions_attn, additions_mlp_out, tokens, metric, batched=False):
         get_resids = self.llama.select().at_instances_of(LlamaBlock).apply_with_selected_index(lambda i, x:
             pz.nn.Sequential([
                 pz.de.TellIntermediate.from_config(tag=f"resid_pre_{i}"),
                 x
             ])
         )
-        get_resids = get_resids.select().at_instances_of(LlamaBlock).apply_with_selected_index(lambda l, b: b.select().at_instances_of(pz.nn.Residual).apply_with_selected_index(lambda i, x: x if i == 0 else pz.nn.Sequential([
-            pz.de.TellIntermediate.from_config(tag=f"resid_mid_{l}"),
+        get_resids = get_resids.select().at_instances_of(LlamaAttention).apply_with_selected_index(lambda l, b: b.attn_value_to_output.select().at_instances_of(pz.nn.Linear).apply_with_selected_index(lambda i, x: pz.nn.Sequential([
+            pz.de.TellIntermediate.from_config(tag=f"resid_attn_{l}"),
             x,
         ])))
 
-
-        get_resids = get_resids.select().at_instances_of(LlamaAttention).apply_with_selected_index(lambda i, x: x.select().at_instances_of(pz.nn.Softmax).apply(lambda b: pz.nn.Sequential([
-            b,
-            pz.de.TellIntermediate.from_config(tag=f"attn_{i}"),
-        ])))
+        get_resids = self.llama.select().at_instances_of(LlamaMLP).apply_with_selected_index(lambda i, x:
+            pz.nn.Sequential([
+                pz.de.TellIntermediate.from_config(tag=f"resid_mlp_in_{i}"),
+                x,
+                pz.de.TellIntermediate.from_config(tag=f"resid_mlp_out_{i}"),
+            ])
+        )
 
         get_resids = pz.de.CollectingSideOutputs.handling(get_resids, tag_predicate=lambda x: True)
+
         make_additions = get_resids.select().at_instances_of(LlamaBlock).apply_with_selected_index(lambda i, x:
             pz.nn.Sequential([
                 ActivationAddition(pz.nx.wrap(additions_pre[i], *(("batch",) if batched else ()), "seq", "embedding"), "all"),
                 x
             ])
         )
-        make_additions = make_additions.select().at_instances_of(LlamaBlock).apply_with_selected_index(lambda l, b: b.select().at_instances_of(pz.nn.Residual).apply_with_selected_index(lambda i, x: x if i == 0 else pz.nn.Sequential([
-            ActivationAddition(pz.nx.wrap(additions_mid[l], *(("batch",) if batched else ()), "seq", "embedding"), "all"),
-            x,
+
+        def attention_addition(x, layer):
+            return pz.nx.wrap(
+                x.unwrap("batch", "seq", "kv_heads", "q_rep", "projection") + additions_attn[layer],
+                "batch", "seq", "kv_heads", "q_rep", "projection"
+            )
+
+        #TODO
+        make_additions = make_additions.select().at_instances_of(LlamaAttention).apply_with_selected_index(lambda l, b: b.attn_value_to_output.select().at_instances_of(pz.nn.Linear).apply_with_selected_index(lambda i, x: pz.nn.Sequential([
+            # ActivationAddition(pz.nx.wrap(additions_attn[i], *(("batch",) if batched else ()), 'kv_heads', 'q_rep', 'projection', 'seq'), "all"),
+
+                # partial(attention_addition, layer=l),
+                x
         ])))
+
+        make_additions = make_additions.select().at_instances_of(LlamaMLP).apply_with_selected_index(lambda i, x:
+            pz.nn.Sequential([
+                x,
+                ActivationAddition(pz.nx.wrap(additions_mlp_out[i], *(("batch",) if batched else ()), "seq", "embedding"), "all"),
+            ])
+        )
+        
+        
         tokens_wrapped = pz.nx.wrap(tokens, "batch", "seq")
         logits, resids = make_additions(self.llama.inputs.from_basic_segments(tokens_wrapped))
-        return metric(logits.unwrap("batch", "seq", "vocabulary"), resids, tokens), (logits, resids[::3], resids[1::3], resids[2::3])
+        return metric(logits.unwrap("batch", "seq", "vocabulary"), resids, tokens), (logits, resids[::4], resids[1::4], resids[2::4], resids[3::4])
 
 
     def get_metric_resid_grad(self, tokens, metric_fn):
-        additions = [jnp.zeros(tokens.shape + (self.llama.config.hidden_size,)) for _ in range(self.llama.config.num_layers)]
+        additions_resid = [jnp.zeros(tokens.shape + (self.llama.config.hidden_size,)) for _ in range(self.llama.config.num_layers)]
+        #TODO load size from config
+        additions_attn = [jnp.zeros(tokens.shape + (4, 2, 256)) for _ in range(self.llama.config.num_layers)]
+        additions_mlp = [jnp.zeros(tokens.shape + (self.llama.config.hidden_size,)) for _ in range(self.llama.config.num_layers)]
         batched = tokens.ndim > 1
-        (metric, (logits, resids_pre, qk, resids_mid)), (grad_pre, grad_mid) = jax.value_and_grad(self.run_with_add, argnums=(0, 1), has_aux=True)(additions, additions, tokens, metric_fn, batched=batched)
+
+        # (metric, (logits, resids_pre, resids_attn, resids_mlp_in, resids_mlp_out)), (grad_pre, grad_att, grad_mlp) = jax.value_and_grad(self.run_with_add, argnums=(0, 1, 2), has_aux=True)(additions_resid, additions_attn, additions_mlp, tokens, metric_fn, batched=batched)
+        
+
+        self.run_with_add(additions_resid, additions_attn, additions_mlp, tokens, metric_fn, batched=batched)
+
+
+        print(
+            resids_pre[0].value, resids_attn[0].value, resids_mlp_in[0].value, resids_mlp_out[0].value
+        )
+        
+        
         return (
             metric,
             [r.value.unwrap("batch", "seq", "embedding") for r in resids_pre],
-            [r.value.unwrap("batch", "seq", "embedding") for r in resids_mid],
-            [r.value.unwrap("batch", "kv_heads", "q_rep", "seq", "kv_seq") for r in qk],
+            [r.value.unwrap("batch", "seq", 'kv_heads', 'q_rep', 'projection') for r in resids_attn],
+            [r.value.unwrap("batch", "seq", "embedding") for r in resids_mlp_in],
+            [r.value.unwrap("batch", "seq", "embedding") for r in resids_mlp_out],
             grad_pre,
-            grad_mid
+            grad_att,
+            grad_mlp
         )
 
 
@@ -753,6 +791,7 @@ class Circuitizer(eqx.Module):
         k = 32,
         layer_window=1,
     ):
+        raise NotImplementedError("lol")
         feature_effects = self.compute_feature_effects(feature_type, layer, feature_idx, mask, layer_window=layer_window)
         top_effects = []
         for key, features in feature_effects.items():

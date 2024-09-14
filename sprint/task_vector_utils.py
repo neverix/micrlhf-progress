@@ -294,7 +294,7 @@ def get_tv(resids, tokens, sep=1599, shift=None):
 
 
 class ICLRunner:
-    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128, prompt=None, eval_size=2):
+    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128, prompt=None, eval_size=2, use_same_examples=False, use_same_target=False):
         self.task = task
         self.pairs = pairs
         self.seed = seed
@@ -302,12 +302,21 @@ class ICLRunner:
         self.eval_batch_size = batch_size * eval_size
         self.n_shot = n_shot
         self.max_seq_len = max_seq_len
-        
+        self.use_same_examples = use_same_examples
+        self.use_same_target = use_same_target
         self.prepend_space = False
 
         self.gen = random.Random(seed)
+        if self.use_same_examples:
+            examples = self.gen.sample(pairs, k=n_shot-1)
+            self.train_pairs = [examples + [self.gen.sample(pairs, k=1)[0]] for _ in range(batch_size)]
 
-        self.train_pairs = [self.gen.sample(pairs, k=n_shot) for _ in range(batch_size)]
+        elif self.use_same_target:
+            target = self.gen.sample(pairs, k=1)
+            self.train_pairs = [self.gen.sample(pairs, k=n_shot-1) + target for _ in range(batch_size)]
+        else:
+            self.train_pairs = [self.gen.sample(pairs, k=n_shot) for _ in range(batch_size)]
+
         self.eval_pairs = [self.gen.sample(pairs, k=1) for _ in range(self.eval_batch_size)]
 
         if prompt is None:

@@ -39,9 +39,9 @@ def check_if_single_token(token):
 
 def main(task_name):
     task = tasks[task_name]
-    # task = {
-    #     k:v for k,v in task.items() if check_if_single_token(k) and check_if_single_token(v)
-    # }
+    task = {
+        k:v for k,v in task.items() if check_if_single_token(k) and check_if_single_token(v)
+    }
 
     pairs = list(task.items())
 
@@ -51,6 +51,9 @@ def main(task_name):
     seed = 10
 
     prompt = "Follow the pattern:\n{}"
+
+    if task_name.startswith("algo"):
+        n_shot = 12
 
     runner = ICLRunner(task_name, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt)
 
@@ -177,7 +180,7 @@ def main(task_name):
     weight_threshold = sorted_graph[n_nodes * k_connections][0]
 
     import json
-    with open(f"micrlhf-progress/all-graph-{task_name}.json", 'w') as f:
+    with open(f"micrlhf-progress/all-graph-{task_name}-fixed.json", 'w') as f:
         json.dump({"edges": graph, "nodes": combined_ies, "threshold": weight_threshold}, f)
 
 
