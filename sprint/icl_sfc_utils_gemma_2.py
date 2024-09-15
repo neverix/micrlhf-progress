@@ -67,19 +67,19 @@ def load_saes(layers):
 def sfc_simple(grad, resid, target, sae, ablate_to=0):
     pre_relu, post_relu, recon = sae_encode_threshold(sae, resid)
 
-    # post_relu = post_relu.astype(jnp.float32)
-    pre_relu = pre_relu.astype(jnp.float32)
+    post_relu = post_relu.astype(jnp.float32)
+    # pre_relu = pre_relu.astype(jnp.float32)
     error = target - recon
     # f = partial(weights_to_resid, sae=sae)
     
-    def f(pre_relu):
-        _, _, recon = sae_encode_threshold(sae, None, pre_relu=pre_relu)
+    def f(x):
+        _, _, recon = sae_encode_threshold(sae, None, post_relu=x)
         return recon
 
     grad = grad.astype(jnp.float32)
-    sae_grad, = jax.vjp(f, pre_relu)[1](grad,)
-    # indirect_effects = sae_grad * post_relu
-    indirect_effects = sae_grad * pre_relu
+    sae_grad, = jax.vjp(f, post_relu)[1](grad,)
+    indirect_effects = sae_grad * post_relu
+    # indirect_effects = sae_grad * pre_relu
     indirect_effects_error = jnp.einsum("...f, ...f -> ...", grad, error)
     return indirect_effects, indirect_effects_error, sae_grad, error
 
@@ -302,8 +302,8 @@ class Circuitizer(eqx.Module):
     def run_with_add(self, additions_pre, additions_attn, additions_mlp_out, tokens, metric, batched=False):
         get_resids = self.llama.select().at_instances_of(LlamaBlock).apply_with_selected_index(lambda i, x:
             pz.nn.Sequential([
-                pz.de.TellIntermediate.from_config(tag=f"resid_pre_{i}"),
-                x
+                x,
+                pz.de.TellIntermediate.from_config(tag=f"resid_post_{i}"),
             ])
         )
         get_resids = get_resids.select().at_instances_of(LlamaAttention).apply_with_selected_index(lambda l, b: b.select().at(lambda x: x.attn_value_to_output).at_instances_of(pz.nn.Linear).apply_with_selected_index(lambda i, x: pz.nn.Sequential([
@@ -370,7 +370,7 @@ class Circuitizer(eqx.Module):
         batched = tokens.ndim > 1
 
         # TODO
-        (metric, (logits, resids_pre, resids_attn, resids_mlp_in, resids_mlp_out)), (grad_pre, grad_att, grad_mlp) = jax.value_and_grad(self.run_with_add, argnums=(0, 1, 2), has_aux=True)(additions_resid, additions_attn, additions_mlp, tokens, metric_fn, batched=batched)
+        (metric, (logits, resids_attn, resids_mlp_in, resids_mlp_out, resids_pre)), (grad_pre, grad_att, grad_mlp) = jax.value_and_grad(self.run_with_add, argnums=(0, 1, 2), has_aux=True)(additions_resid, additions_attn, additions_mlp, tokens, metric_fn, batched=batched)
         
         return (
             metric,

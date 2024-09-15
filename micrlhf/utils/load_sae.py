@@ -174,22 +174,23 @@ def weights_to_resid(weights, sae):
     # recon = recon.astype('bfloat16')
     return recon.astype(weights.dtype)
 
-def sae_encode_threshold(sae, vector, pre_relu=None, keep_features=None, ablate_to=0):
+def sae_encode_threshold(sae, vector, pre_relu=None, keep_features=None, ablate_to=0, post_relu=None):
     inputs = vector
 
-    if pre_relu is None:
-        pre_relu = inputs @ sae["W_enc"] + sae["b_enc"]
 
-    post_relu = jax.nn.relu(pre_relu)
+    if post_relu is None:
+        if pre_relu is None:
+            pre_relu = inputs @ sae["W_enc"] + sae["b_enc"]
 
-    feature_acts = post_relu * (pre_relu > sae["threshold"])
+        post_relu = jax.nn.relu(pre_relu)
+        post_relu = post_relu * (pre_relu > sae["threshold"])
 
     if keep_features is not None:
-        feature_acts = feature_acts * keep_features + ablate_to * (1 - keep_features)
+        post_relu = post_relu * keep_features + ablate_to * (1 - keep_features)
 
-    recon = feature_acts @ sae["W_dec"] + sae["b_dec"]
+    recon = post_relu @ sae["W_dec"] + sae["b_dec"]
 
-    return pre_relu, feature_acts, recon
+    return pre_relu, post_relu, recon
 
 def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None, ablate_to=0):
     inputs = vector
