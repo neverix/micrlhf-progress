@@ -46,7 +46,7 @@ def logprob_loss(logits, tokens, sep=1599, pad_token=32000, n_first=None, shift=
 
     return logits.sum(axis=-1).mean(axis=-1)
 
-def logprob_loss_all(logits, tokens, sep, pad, use_softmax=False):
+def logprob_loss_all(logits, tokens, sep, pad, use_softmax=False, do_reduce=True):
     if use_softmax:
         logits = jax.nn.log_softmax(logits)
     
@@ -60,7 +60,10 @@ def logprob_loss_all(logits, tokens, sep, pad, use_softmax=False):
 
     logits = logits * mask
 
-    return logits.sum(axis=-1).mean(axis=-1)
+    if do_reduce:
+        logits = logits.sum(axis=-1)
+
+    return logits.mean(axis=0)
 
 
 def load_saes(layers):
@@ -104,8 +107,8 @@ sep = 3978
 newline = 108
 pad = 0
 
-def metric_fn(logits, resids, tokens, use_softmax=False):
-    return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax)
+def metric_fn(logits, resids, tokens, use_softmax=False, do_reduce=True):
+    return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax, do_reduce=do_reduce)
     return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
 
 
@@ -210,6 +213,12 @@ class Circuitizer(eqx.Module):
             ("output", jnp.roll(self.train_tokens == newline, -1, axis=-1).at[:, :prompt_length].set(False)),
             ("newline", jnp.array(self.train_tokens == newline).at[:, :prompt_length].set(False)),
         ]
+
+        remaining_mask = self.train_tokens != pad
+        for mask_name, mask in masks:
+            remaining_mask = jnp.logical_and(remaining_mask, jnp.logical_not(mask))
+
+        masks.append(("remaining", remaining_mask))
 
         self.masks = OrderedDict(masks)
 
@@ -635,7 +644,7 @@ class Circuitizer(eqx.Module):
             return f(resid)
 
     @eqx.filter_jit
-    def ablated_metric(self, llama_ablated, runner=None):
+    def ablated_metric(self, llama_ablated, runner=None, do_reduce=True):
 
         if runner is not None:
             runner, tokenizer = runner
@@ -651,7 +660,7 @@ class Circuitizer(eqx.Module):
             tokens = self.train_tokens
 
         ablated_logits = llama_ablated(inputs)
-        return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, tokens, use_softmax=True)
+        return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, tokens, use_softmax=True, do_reduce=do_reduce)
 
     def mask_ie(self, ie, threshold, topk=None, inverse=False, token_types=None, do_abs=True, average_over_positions=True, token_prefix=None):
         out_masks = {}
@@ -685,7 +694,7 @@ class Circuitizer(eqx.Module):
         return out_masks, total_nodes
 
     @eqx.filter_jit
-    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None):
+    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None, do_reduce=True):
         saes = self.saes
         ie_resid = self.ie_resid
         ie_attn, ie_transcoder = self.ie_attn, self.ie_transcoder
@@ -757,21 +766,21 @@ class Circuitizer(eqx.Module):
                 return block
 
             llama_ablated = block_selection.apply(converter)
-        return self.ablated_metric(llama_ablated, runner=runner), n_nodes[0]
+        return self.ablated_metric(llama_ablated, runner=runner, do_reduce=do_reduce), n_nodes[0]
 
-    def run_ablated_metrics(self, thresholds, topks=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None):
+    def run_ablated_metrics(self, thresholds, topks=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None, do_reduce=True):
         n_nodes_counts = []
         ablated_metrics = []
 
         if topks is not None:
             for topk in topks:
-                abl_met, n_nodes = self.ablate_nodes(0, topk=topk, inverse=inverse, layers=layers, sae_types=sae_types, runner=runner, token_types=token_types, do_abs=do_abs, mean_ablate=mean_ablate, average_over_positions=average_over_positions, token_prefix=token_prefix)
-                ablated_metrics.append(float(abl_met))
+                abl_met, n_nodes = self.ablate_nodes(0, topk=topk, inverse=inverse, layers=layers, sae_types=sae_types, runner=runner, token_types=token_types, do_abs=do_abs, mean_ablate=mean_ablate, average_over_positions=average_over_positions, token_prefix=token_prefix, do_reduce=do_reduce)
+                ablated_metrics.append(abl_met.tolist())
                 n_nodes_counts.append(int(n_nodes))
         else:
             for threshold in tqdm(thresholds):
-                abl_met, n_nodes = self.ablate_nodes(threshold, inverse=inverse, layers=layers, sae_types=sae_types, runner=runner, token_types=token_types, do_abs=do_abs, mean_ablate=mean_ablate, average_over_positions=average_over_positions, token_prefix=token_prefix)
-                ablated_metrics.append(float(abl_met))
+                abl_met, n_nodes = self.ablate_nodes(threshold, inverse=inverse, layers=layers, sae_types=sae_types, runner=runner, token_types=token_types, do_abs=do_abs, mean_ablate=mean_ablate, average_over_positions=average_over_positions, token_prefix=token_prefix, do_reduce=do_reduce)
+                ablated_metrics.append(abl_met.tolist())
                 n_nodes_counts.append(int(n_nodes))
 
         return ablated_metrics, n_nodes_counts
