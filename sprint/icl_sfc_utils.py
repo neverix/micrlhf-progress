@@ -11,7 +11,7 @@ import numpy as np
 import jax
 
 from micrlhf.llama import LlamaTransformer
-from micrlhf.utils.load_sae import get_nev_it_sae_suite, sae_encode_gated, weights_to_resid, resids_to_weights
+from micrlhf.utils.load_sae import get_nev_it_sae_suite, sae_encode_gated
 from typing import List, Callable, Dict
 from transformers import AutoTokenizer
 from sprint.task_vector_utils import load_tasks, ICLRunner
@@ -41,6 +41,22 @@ def logprob_loss(logits, tokens, sep=1599, pad_token=32000, n_first=None, shift=
         mask = jnp.logical_and(mask, jnp.logical_not(rolled_mask))
 
     mask = jnp.logical_and(mask, tokens[:, 1:] != pad_token)
+
+    logits = logits * mask
+
+    return logits.sum(axis=-1).mean(axis=-1)
+
+def logprob_loss_all(logits, tokens, sep, pad, use_softmax=False):
+    if use_softmax:
+        logits = jax.nn.log_softmax(logits)
+    
+    logits = logits[:, :-1]
+
+    logits = jnp.take_along_axis(logits, tokens[:, 1:, None], axis=-1).squeeze(-1)
+
+    mask = tokens[:, :-1] == sep
+    
+    mask = jnp.logical_and(mask, tokens[:, 1:] != pad)
 
     logits = logits * mask
 
@@ -89,6 +105,7 @@ newline = 108
 pad = 0
 
 def metric_fn(logits, resids, tokens, use_softmax=False):
+    return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax)
     return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
 
 
@@ -316,32 +333,49 @@ class Circuitizer(eqx.Module):
     def mlp_normalize(self, layer, resid_mid):
         return self.mlp_rms[layer](pz.nx.wrap(resid_mid, "batch", "seq", "embedding")).unwrap("batch", "seq", "embedding")
 
-    def transcoder_feature_to_mid(self, layer, feature_idx, mask):
+    def transcoder_feature_to_mid(self, layer, feature_idx, mask, position):
         sae = self.get_sae(layer=layer, label="transcoder")
         resid = self.resids_mid[layer]
 
-        def f(resid):
-            resid = self.mlp_normalize(layer, resid)
-            batch_token_feat = resids_to_weights(resid, sae)[:, :, feature_idx] * self.sae_grads_transcoder[layer][:, :, feature_idx]
-            token_act = self.mask_average(batch_token_feat, mask)
-            return token_act
+
+        if position is None:
+            def f(resid):
+                resid = self.mlp_normalize(layer, resid)
+
+                batch_token_feat = sae_encode_gated(sae, resid)[0][:, :, feature_idx] * self.sae_grads_transcoder[layer][:, :, feature_idx]
+                token_act = self.mask_average(batch_token_feat, mask)
+
+                return token_act
+        else:
+            def f(resid):
+                resid = self.mlp_normalize(layer, resid)
+
+                batch_token_feat = sae_encode_gated(sae, resid)[0][:, position, feature_idx] * self.sae_grads_transcoder[layer][:, position, feature_idx]
+                token_act = batch_token_feat.mean(axis=0)
+                return token_act
 
         return jax.grad(f)(resid)
 
-    def transcoder_error_to_mid(self, layer, mask):
+    def transcoder_error_to_mid(self, layer, mask, position):
         sae = self.get_sae(layer=layer, label="transcoder")
         resid_next = self.resids_pre[layer + 1]
         resid = self.resids_mid[layer]
 
         grad = self.grad_pre[layer + 1]
 
-        def f(resid):
-            _, _, recon = sae_encode_gated(sae, resid)
-            err_by_grad = jnp.einsum("...f, ...f -> ...", (resid_next - recon), grad)
-            return self.mask_average(err_by_grad, mask)
+        if position is None:
+            def f(resid):
+                _, _, recon = sae_encode_gated(sae, resid)
+                err_by_grad = jnp.einsum("...f, ...f -> ...", (resid_next - recon), grad)
+                return self.mask_average(err_by_grad, mask)
+        else:
+            def f(resid):
+                _, _, recon = sae_encode_gated(sae, resid)
+                err_by_grad = jnp.einsum("...f, ...f -> ...", (resid_next - recon), grad)
+                return err_by_grad.mean(axis=0)[position]
 
         return jax.grad(f)(resid)
-    def attn_out_feature_to_pre(self, layer, feature_idx, mask):
+    def attn_out_feature_to_pre(self, layer, feature_idx, mask, position):
         sae = self.get_sae(layer=layer, label="attn_out")
 
         resid = self.resids_pre[layer]
@@ -358,19 +392,30 @@ class Circuitizer(eqx.Module):
             'attn_mask': self.llama_inputs.attention_mask
         }
 
-        def f(resid):
-            resid = pz.nx.wrap(resid, "batch", "seq", "embedding")
-            attn_out = subblock((resid,) + tuple(side_inputs[tag] for tag in subblock.side_input_tags))
+        if position is None:
+            def f(resid):
+                resid = pz.nx.wrap(resid, "batch", "seq", "embedding")
+                attn_out = subblock((resid,) + tuple(side_inputs[tag] for tag in subblock.side_input_tags))
 
-            attn_out = attn_out.unwrap("batch", "seq", "embedding") 
+                attn_out = attn_out.unwrap("batch", "seq", "embedding") 
 
-            batch_token_feat = resids_to_weights(attn_out, sae)[:, :, feature_idx] * self.sae_grads_attn[layer][:, :, feature_idx]
-            token_act = self.mask_average(batch_token_feat, mask)
-            return token_act
+                batch_token_feat = sae_encode_gated(sae, attn_out)[0][:, :, feature_idx] * self.sae_grads_attn[layer][:, :, feature_idx]
+                token_act = self.mask_average(batch_token_feat, mask)
+                return token_act
+        else:
+            def f(resid):
+                resid = pz.nx.wrap(resid, "batch", "seq", "embedding")
+                attn_out = subblock((resid,) + tuple(side_inputs[tag] for tag in subblock.side_input_tags))
+
+                attn_out = attn_out.unwrap("batch", "seq", "embedding") 
+
+                batch_token_feat = sae_encode_gated(sae, attn_out)[0][:, position, feature_idx] * self.sae_grads_attn[layer][:, position, feature_idx]
+                token_act = batch_token_feat.mean(axis=0)
+                return token_act
 
         return jax.grad(f)(resid)
 
-    def attn_out_error_to_pre(self, layer, mask):
+    def attn_out_error_to_pre(self, layer, mask, position):
         sae = self.get_sae(layer=layer, label="attn_out")
 
         resid = self.resids_pre[layer]
@@ -387,91 +432,118 @@ class Circuitizer(eqx.Module):
             'attn_mask': self.llama_inputs.attention_mask
         }
 
-        def f(resid):
-            resid = pz.nx.wrap(resid, "batch", "seq", "embedding")
-            attn_out = subblock((resid,) + tuple(side_inputs[tag] for tag in subblock.side_input_tags))
 
-            attn_out = attn_out.unwrap("batch", "seq", "embedding") 
+        if position is None:
+            def f(resid):
+                resid = pz.nx.wrap(resid, "batch", "seq", "embedding")
+                attn_out = subblock((resid,) + tuple(side_inputs[tag] for tag in subblock.side_input_tags))
 
-            _, _, recon = sae_encode_gated(sae, attn_out)
-            batch_token_feat = jnp.einsum("...f, ...f -> ...", attn_out - recon, self.grad_mid[layer])
-            token_act = self.mask_average(batch_token_feat, mask)
-            return token_act
+                attn_out = attn_out.unwrap("batch", "seq", "embedding") 
+
+                _, _, recon = sae_encode_gated(sae, attn_out)
+                batch_token_feat = jnp.einsum("...f, ...f -> ...", attn_out - recon, self.grad_mid[layer])
+                token_act = self.mask_average(batch_token_feat, mask)
+                return token_act
+        else:
+            def f(resid):
+                resid = pz.nx.wrap(resid, "batch", "seq", "embedding")
+                attn_out = subblock((resid,) + tuple(side_inputs[tag] for tag in subblock.side_input_tags))
+
+                attn_out = attn_out.unwrap("batch", "seq", "embedding") 
+
+                _, _, recon = sae_encode_gated(sae, attn_out)
+                batch_token_feat = jnp.einsum("...f, ...f -> ...", attn_out - recon, self.grad_mid[layer])
+                token_act = batch_token_feat.mean(axis=0)[position]
+                return token_act
 
         return jax.grad(f)(resid)
     # float(jnp.linalg.norm(attn_out_error_to_pre(6, "arrow")))
 
-    def pre_feature_to_pre(self, layer, feature_idx, mask):
+    def pre_feature_to_pre(self, layer, feature_idx, mask, position):
         sae = self.get_sae(layer=layer)
         resid = self.resids_pre[layer]
 
-        def f(resid):
-            batch_token_feat = resids_to_weights(resid, sae)[:, :, feature_idx] * self.sae_grads_resid[layer][:, :, feature_idx]
-            token_act = self.mask_average(batch_token_feat, mask)
-            return token_act
+        if position is None:
+            def f(resid):
+                batch_token_feat = sae_encode_gated(sae, resid)[0][:, :, feature_idx] * self.sae_grads_resid[layer][:, :, feature_idx]
+                token_act = self.mask_average(batch_token_feat, mask)
+                return token_act
+        else: 
+            def f(resid):
+                batch_token_feat = sae_encode_gated(sae, resid)[0][:, position, feature_idx] * self.sae_grads_resid[layer][:, position, feature_idx]
+                token_act = batch_token_feat.mean(axis=0)
+                return token_act
 
         return jax.grad(f)(resid)
 
-    def pre_error_to_pre(self, layer, mask):
+    def pre_error_to_pre(self, layer, mask, position):
         sae = self.get_sae(layer=layer)
         resid = self.resids_pre[layer]
 
-        def f(resid):
-            _, _, recon = sae_encode_gated(sae, resid)
-            batch_token_error = jnp.einsum("...f, ...f -> ...", (resid - recon), self.grad_pre[layer])
-            token_grad = self.mask_average(batch_token_error, mask)
-            return token_grad
+        if position is None:
+            def f(resid):
+                _, _, recon = sae_encode_gated(sae, resid)
+                batch_token_error = jnp.einsum("...f, ...f -> ...", (resid - recon), self.grad_pre[layer])
+                token_grad = self.mask_average(batch_token_error, mask)
+                return token_grad
+        else:
+            def f(resid):
+                _, _, recon = sae_encode_gated(sae, resid)
+                batch_token_error = jnp.einsum("...f, ...f -> ...", (resid - recon), self.grad_pre[layer])
+                # batch_token_error = (resid - recon) * self.grad_pre[layer]
+                token_grad = batch_token_error.mean(axis=0)[position]
+                return token_grad
 
         return jax.grad(f)(resid)
 
-    def ie_pre_to_transcoder_features(self, layer, grad, mask):
+    def ie_pre_to_transcoder_features(self, layer, grad, mask, average_over_positions):
         sae = self.get_sae(layer=layer, label="transcoder")
         resid_mid = self.resids_mid[layer]
         resid_mid = self.mlp_normalize(layer, resid_mid)
         ie = sfc_simple(grad, resid_mid, resid_mid, sae)[0]
-        ie = self.mask_average(ie, mask)
+        ie = self.mask_average(ie, mask, average_over_positions=average_over_positions)
 
         return ie
 
-    def ie_pre_to_transcoder_error(self, layer, grad, mask):
+    def ie_pre_to_transcoder_error(self, layer, grad, mask, average_over_positions):
         sae = self.get_sae(layer=layer, label="transcoder")
         resid_next = self.resids_pre[layer + 1]
         resid_mid = self.resids_mid[layer]
         ie = sfc_simple(grad, self.mlp_normalize(layer, resid_mid), resid_next - resid_mid, sae)[1]
-        ie = self.mask_average(ie, mask)
+        ie = self.mask_average(ie, mask, average_over_positions=average_over_positions)
 
         return ie
 
-    def ie_mid_to_attn_features(self, layer, grad, mask):
+    def ie_mid_to_attn_features(self, layer, grad, mask, average_over_positions):
         sae = self.get_sae(layer=layer, label="attn_out")
         resid_mid = self.resids_mid[layer]
         resid_pre = self.resids_pre[layer]
 
         ie = sfc_simple(grad, resid_mid - resid_pre, resid_mid - resid_pre, sae)[0]
-        ie = self.mask_average(ie, mask)
+        ie = self.mask_average(ie, mask, average_over_positions=average_over_positions)
         return ie
 
-    def ie_mid_to_attn_error(self, layer, grad, mask):
+    def ie_mid_to_attn_error(self, layer, grad, mask, average_over_positions):
         sae = self.get_sae(layer=layer, label="attn_out")
         resid_mid = self.resids_mid[layer]
         resid_pre = self.resids_pre[layer]
 
         ie = sfc_simple(grad, resid_mid - resid_pre, resid_mid - resid_pre, sae)[1]
-        ie = self.mask_average(ie, mask)
+        ie = self.mask_average(ie, mask, average_over_positions=average_over_positions)
         return ie
 
-    def ie_pre_to_pre_features(self, layer, grad, mask):
+    def ie_pre_to_pre_features(self, layer, grad, mask, average_over_positions):
         sae = self.get_sae(layer=layer)
         resid = self.resids_pre[layer]
         ie = sfc_simple(grad, resid, resid, sae)[0]
-        ie = self.mask_average(ie, mask)
+        ie = self.mask_average(ie, mask, average_over_positions=average_over_positions)
         return ie
 
-    def ie_pre_to_pre_error(self, layer, grad, mask):
+    def ie_pre_to_pre_error(self, layer, grad, mask, average_over_positions):
         sae = self.get_sae(layer=layer)
         resid = self.resids_pre[layer]
         ie = sfc_simple(grad, resid, resid, sae)[1]
-        ie = self.mask_average(ie, mask)
+        ie = self.mask_average(ie, mask, average_over_positions=average_over_positions)
         return ie
     # float((ie_pre_to_pre_features(6, grad_pre[6], "arrow") - mask_average(ie_error_resid[6], "arrow")).sum())
 
@@ -496,8 +568,8 @@ class Circuitizer(eqx.Module):
         def f(resid_mid):
             resid_mid = self.mlp_normalize(layer, resid_mid)
             # we ignore error nodes
-            weights = resids_to_weights(resid_mid, sae)
-            recon = weights_to_resid(weights, sae)
+            weights, _, _ = sae_encode_gated(sae, resid_mid)
+            _, _, recon = sae_encode_gated(sae, None, pre_relu=weights)
 
             return recon
 
@@ -708,39 +780,43 @@ class Circuitizer(eqx.Module):
         layer,
         feature_idx,
         mask,
+        position,
         layer_window=1,
     ):
+        
+        average_over_positions = position is None
+
         match feature_type:
             case "r":
-                resid_grad = self.pre_feature_to_pre(layer, feature_idx, mask)
+                resid_grad = self.pre_feature_to_pre(layer, feature_idx, mask, position)
             case "t":
-                resid_grad = self.transcoder_feature_to_mid(layer, feature_idx, mask)
+                resid_grad = self.transcoder_feature_to_mid(layer, feature_idx, mask, position)
             case "a":
-                resid_grad = self.attn_out_feature_to_pre(layer, feature_idx, mask)
+                resid_grad = self.attn_out_feature_to_pre(layer, feature_idx, mask, position)
             case "er":
-                resid_grad = self.pre_error_to_pre(layer, mask)
+                resid_grad = self.pre_error_to_pre(layer, mask, position)
             case "et":
-                resid_grad = self.transcoder_error_to_mid(layer, mask)
+                resid_grad = self.transcoder_error_to_mid(layer, mask, position)
             case "ea":
-                resid_grad = self.attn_out_error_to_pre(layer, mask)
+                resid_grad = self.attn_out_error_to_pre(layer, mask, position)
         feature_effects = {}
         for l in range(layer, max(5, layer - (1 if feature_type in ("r", "er") else 0) - layer_window), -1):
             if l < layer:
                 for mask in self.masks:
-                    feature_effects[("t", l, mask)] = self.ie_pre_to_transcoder_features(l, resid_grad, mask)
-                    feature_effects[("et", l, mask)] = self.ie_pre_to_transcoder_error(l, resid_grad, mask)
+                    feature_effects[("t", l, mask)] = self.ie_pre_to_transcoder_features(l, resid_grad, mask, average_over_positions=average_over_positions)
+                    feature_effects[("et", l, mask)] = self.ie_pre_to_transcoder_error(l, resid_grad, mask, average_over_positions=average_over_positions)
             # # does not work # resid_grad = resid_grad - grad_through_mlp(layer, resid_grad)
             # resid_grad = resid_grad + grad_through_mlp(layer, resid_grad)
             if l < layer or feature_type in ("t", "et"):
                 for mask in self.masks:
-                    feature_effects[("a", l, mask)] = self.ie_mid_to_attn_features(l, resid_grad, mask)
-                    feature_effects[("ea", l, mask)] = self.ie_mid_to_attn_error(l, resid_grad, mask)
+                    feature_effects[("a", l, mask)] = self.ie_mid_to_attn_features(l, resid_grad, mask, average_over_positions=average_over_positions)
+                    feature_effects[("ea", l, mask)] = self.ie_mid_to_attn_error(l, resid_grad, mask, average_over_positions=average_over_positions)
             # # does not work # resid_grad = resid_grad - grad_through_attn(layer, resid_grad)
             # resid_grad = resid_grad + grad_through_attn(layer, resid_grad)
             if l < layer or feature_type in ("t", "et", "a", "ea"):
                 for mask in self.masks:
-                    feature_effects[("r", l, mask)] = self.ie_pre_to_pre_features(l, resid_grad, mask)
-                    feature_effects[("er", l, mask)] = self.ie_pre_to_pre_error(l, resid_grad, mask)
+                    feature_effects[("r", l, mask)] = self.ie_pre_to_pre_features(l, resid_grad, mask, average_over_positions=average_over_positions)
+                    feature_effects[("er", l, mask)] = self.ie_pre_to_pre_error(l, resid_grad, mask, average_over_positions=average_over_positions)
         return feature_effects
 
     def compute_edges(
@@ -752,15 +828,32 @@ class Circuitizer(eqx.Module):
         abs_effects = False,
         k = 32,
         layer_window=1,
+        position=None,
+        circuit_features_dict=None,
     ):
-        feature_effects = self.compute_feature_effects(feature_type, layer, feature_idx, mask, layer_window=layer_window)
+        feature_effects = self.compute_feature_effects(feature_type, layer, feature_idx, mask, layer_window=layer_window, position=position)
         top_effects = []
-        for key, features in feature_effects.items():
-            if features.ndim == 0:
-                top_effects.append((float(features), key, 0))
-                continue
-            effects, indices = jax.lax.top_k(features if not abs_effects else jnp.abs(features), k)
-            for i, e in zip(indices.tolist(), effects.tolist()):
-                top_effects.append((e, key, i))
-        top_effects.sort(reverse=True)
-        return top_effects[:k]
+        if position is None:
+            for key, features in feature_effects.items():
+                if features.ndim == 0:
+                    top_effects.append((float(features), key, 0))
+                    continue
+                effects, indices = jax.lax.top_k(features if not abs_effects else jnp.abs(features), k)
+                for i, e in zip(indices.tolist(), effects.tolist()):
+                    top_effects.append((e, key, i))
+            top_effects.sort(reverse=True)
+        else:
+
+            for key, features in feature_effects.items():
+                if features.ndim == 1:
+                    for i, e in enumerate(features):
+                        top_effects.append((float(e), key, 0, i))
+                    continue
+                
+                if key in circuit_features_dict:
+                    circuit_features = circuit_features_dict[key]
+                    for pos, feat in circuit_features:
+                        effect = features[pos, feat]
+                        top_effects.append((float(effect), key, feat, pos))
+            top_effects.sort(reverse=True)
+        return top_effects
