@@ -176,9 +176,9 @@ class Circuitizer(eqx.Module):
     qk: List[jax.typing.ArrayLike]
     grad_pre: List[jax.typing.ArrayLike]
     grad_mid: List[jax.typing.ArrayLike]
-    attn_rms_out: List[jax.typing.ArrayLike]
+    # attn_rms_out: List[jax.typing.ArrayLike]
     mlp_rms: List[jax.typing.ArrayLike]
-    mlp_rms_out: List[jax.typing.ArrayLike]
+    # mlp_rms_out: List[jax.typing.ArrayLike]
     
 
     def __init__(self, llama: LlamaTransformer, tokenizer: AutoTokenizer, runner: ICLRunner, layers: List[int], prompt: str):
@@ -217,9 +217,9 @@ class Circuitizer(eqx.Module):
         self.run_metrics()
         print("Setting up RMS...")
         self.mlp_rms = [self.get_rms_block(layer, 1, 0) for layer in trange(llama.config.num_layers)]
-        self.mlp_rms_out = [self.get_rms_block(layer, 1, 1) for layer in trange(llama.config.num_layers)]
-        self.attn_rms = [self.get_rms_block(layer, 0, 0) for layer in trange(llama.config.num_layers)]
-        self.attn_rms_out = [self.get_rms_block(layer, 0, 1) for layer in trange(llama.config.num_layers)]
+        # self.mlp_rms_out = [self.get_rms_block(layer, 1, 1) for layer in trange(llama.config.num_layers)]
+        # self.attn_rms = [self.get_rms_block(layer, 0, 0) for layer in trange(llama.config.num_layers)]
+        # self.attn_rms_out = [self.get_rms_block(layer, 0, 1) for layer in trange(llama.config.num_layers)]
         print("Loading SAEs...")
         self.saes = load_saes(self.layers)
         print("Running node IEs...")
