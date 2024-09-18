@@ -205,12 +205,14 @@ def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_
         pre_relu = pre_relu +sae["b_enc"]
         pre_relu = pre_relu * s
 
+    if keep_features is not None:
+        pre_relu = pre_relu * keep_features + ablate_to * (1 - keep_features)
+
     post_relu = jax.nn.relu(pre_relu)
     threshold = jnp.maximum(0, sae["b_gate"] - sae["b_enc"] * s)
     post_relu = (post_relu > threshold) * post_relu
 
-    if keep_features is not None:
-        post_relu = post_relu * keep_features + ablate_to * (1 - keep_features)
+    
         # axes = tuple(range(post_relu.ndim - 1))
         
         # post_relu = jax.vmap(jax.vmap(lambda a, b: a.at[keep_features].set(b[keep_features]), in_axes=(0, 0), out_axes=0),

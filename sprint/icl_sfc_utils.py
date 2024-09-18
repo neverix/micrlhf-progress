@@ -716,7 +716,7 @@ class Circuitizer(eqx.Module):
                         mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs, average_over_positions=average_over_positions, token_prefix=token_prefix)
 
                         if mean_ablate:
-                            _, weights, _ = sae_encode_gated(resid, self.resids_pre[layer])
+                            weights, _, _ = sae_encode_gated(resid, self.resids_pre[layer])
                             avg_weights = {
                                 k: self.mask_average(weights, k) for k in self.masks
                             }
@@ -734,7 +734,7 @@ class Circuitizer(eqx.Module):
                         mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs, average_over_positions=average_over_positions, token_prefix=token_prefix)
 
                         if mean_ablate:
-                            _, weights, _ = sae_encode_gated(attn_out, self.resids_mid[layer] - self.resids_pre[layer])
+                            weights, _, _ = sae_encode_gated(attn_out, self.resids_mid[layer] - self.resids_pre[layer])
                             avg_weights = {
                                 k: self.mask_average(weights, k) for k in self.masks
                             }
@@ -752,7 +752,7 @@ class Circuitizer(eqx.Module):
                         mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs, average_over_positions=average_over_positions, token_prefix=token_prefix)
 
                         if mean_ablate:
-                            _, weights, _ = sae_encode_gated(transcoder, self.mlp_normalize(layer, self.resids_mid[layer]))
+                            weights, _, _ = sae_encode_gated(transcoder, self.mlp_normalize(layer, self.resids_mid[layer]))
                             avg_weights = {
                                 k: self.mask_average(weights, k) for k in self.masks
                             }
