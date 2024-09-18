@@ -694,11 +694,18 @@ class Circuitizer(eqx.Module):
         return out_masks, total_nodes
 
     @eqx.filter_jit
+<<<<<<< HEAD
+    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"],
+                     runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True,
+                     token_prefix=None, llama_ablated=None, return_ablated=False):
+=======
     def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None, do_reduce=True):
+>>>>>>> origin/main
         saes = self.saes
         ie_resid = self.ie_resid
         ie_attn, ie_transcoder = self.ie_attn, self.ie_transcoder
-        llama_ablated = self.llama
+        if llama_ablated is None:
+            llama_ablated = self.llama
         n_nodes = {0: 0}
 
         if layers is None:
@@ -766,21 +773,42 @@ class Circuitizer(eqx.Module):
                 return block
 
             llama_ablated = block_selection.apply(converter)
-        return self.ablated_metric(llama_ablated, runner=runner, do_reduce=do_reduce), n_nodes[0]
+        if return_ablated:
+            return llama_ablated
+        return self.ablated_metric(llama_ablated, runner=runner), n_nodes[0]
 
-    def run_ablated_metrics(self, thresholds, topks=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None, do_reduce=True):
+    def run_ablated_metrics(self, thresholds, topks=None, inverse=False, layers=None,
+                            sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None,
+                            do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None,
+                            llama_ablated=None, return_ablated=False, do_reduce=True):
         n_nodes_counts = []
         ablated_metrics = []
 
         if topks is not None:
             for topk in topks:
-                abl_met, n_nodes = self.ablate_nodes(0, topk=topk, inverse=inverse, layers=layers, sae_types=sae_types, runner=runner, token_types=token_types, do_abs=do_abs, mean_ablate=mean_ablate, average_over_positions=average_over_positions, token_prefix=token_prefix, do_reduce=do_reduce)
-                ablated_metrics.append(abl_met.tolist())
+                abl_met, n_nodes = self.ablate_nodes(0, topk=topk, inverse=inverse, layers=layers,
+                                                     sae_types=sae_types, runner=runner,
+                                                     token_types=token_types, do_abs=do_abs,
+                                                     mean_ablate=mean_ablate,
+                                                     average_over_positions=average_over_positions,
+                                                     token_prefix=token_prefix,
+                                                     llama_ablated=llama_ablated, do_reduce=do_reduce)
+                ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
         else:
             for threshold in tqdm(thresholds):
-                abl_met, n_nodes = self.ablate_nodes(threshold, inverse=inverse, layers=layers, sae_types=sae_types, runner=runner, token_types=token_types, do_abs=do_abs, mean_ablate=mean_ablate, average_over_positions=average_over_positions, token_prefix=token_prefix, do_reduce=do_reduce)
-                ablated_metrics.append(abl_met.tolist())
+                result = self.ablate_nodes(threshold, inverse=inverse, layers=layers,
+                                                     sae_types=sae_types, runner=runner,
+                                                     token_types=token_types, do_abs=do_abs,
+                                                     mean_ablate=mean_ablate,
+                                                     average_over_positions=average_over_positions,
+                                                     token_prefix=token_prefix,
+                                                     llama_ablated=llama_ablated,
+                                                     return_ablated=return_ablated, do_reduce=do_reduce)
+                if return_ablated:
+                    return result
+                abl_met, n_nodes = result
+                ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
 
         return ablated_metrics, n_nodes_counts
