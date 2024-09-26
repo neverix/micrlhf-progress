@@ -73,7 +73,7 @@ pad = 0
 
 
 
-task_names = [x for x in tasks if x.startswith("algo")]
+task_names = [x for x in tasks]
 n_seeds = 10
 
 # n_few_shots, batch_size, max_seq_len = 64, 64, 512
@@ -90,8 +90,8 @@ from micrlhf.utils.ito import grad_pursuit
 
 seed = 10
 
-layers = [2, 4, 6, 8, 10, 12, 14, 16]
-layers = [10, 12, 14]
+layers = list(range(1, 18))
+# layers = [10, 12, 14]
 
 # layer = 12
 for task in tqdm(task_names):
@@ -196,7 +196,7 @@ for task in tqdm(task_names):
             f"Recon fs: {task}, L: {layer}, Loss: {loss}"  
         )
 
-        with open("cleanup_results_algo.jsonl", "a") as f:
+        with open("cleanup_results_final.jsonl", "a") as f:
             item = {
                 "task": task,
                 "weights": w.tolist(),

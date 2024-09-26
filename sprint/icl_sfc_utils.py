@@ -149,6 +149,27 @@ class AblatedModule(pz.Layer):
         # return out
         return pz.nx.wrap(result, "batch", "seq", "embedding")
 
+def make_masks(tokenizer, tokens, prompt):
+    prompt_length = len(tokenizer.tokenize(prompt))
+
+    masks = [
+        ("prompt", jnp.zeros_like(tokens).at[:, :prompt_length].set(1).astype(bool)),
+        ("input", jnp.roll(tokens == sep, -1, axis=-1).at[:, :prompt_length].set(False)),
+        ("arrow", jnp.array(tokens == sep).at[:, :prompt_length].set(False)), 
+        ("output", jnp.roll(tokens == newline, -1, axis=-1).at[:, :prompt_length].set(False)),
+        ("newline", jnp.array(tokens == newline).at[:, :prompt_length].set(False)),
+    ]
+
+    remaining_mask = tokens != pad
+    for mask_name, mask in masks:
+        remaining_mask = jnp.logical_and(remaining_mask, jnp.logical_not(mask))
+
+    masks.append(("remaining", remaining_mask))
+
+    masks = OrderedDict(masks)
+
+    return masks
+
 class Circuitizer(eqx.Module):
     saes: dict
     llama: LlamaTransformer
@@ -204,23 +225,8 @@ class Circuitizer(eqx.Module):
         self.llama_inputs = llama.inputs.from_basic_segments(self.tokens_wrapped)
 
         print("Setting up masks...")
-        prompt_length = len(tokenizer.tokenize(prompt))
 
-        masks = [
-            ("prompt", jnp.zeros_like(self.train_tokens).at[:, :prompt_length].set(1).astype(bool)),
-            ("input", jnp.roll(self.train_tokens == sep, -1, axis=-1).at[:, :prompt_length].set(False)),
-            ("arrow", jnp.array(self.train_tokens == sep).at[:, :prompt_length].set(False)), 
-            ("output", jnp.roll(self.train_tokens == newline, -1, axis=-1).at[:, :prompt_length].set(False)),
-            ("newline", jnp.array(self.train_tokens == newline).at[:, :prompt_length].set(False)),
-        ]
-
-        remaining_mask = self.train_tokens != pad
-        for mask_name, mask in masks:
-            remaining_mask = jnp.logical_and(remaining_mask, jnp.logical_not(mask))
-
-        masks.append(("remaining", remaining_mask))
-
-        self.masks = OrderedDict(masks)
+        self.masks = make_masks(tokenizer, self.train_tokens, prompt)
 
         print("Running metrics...")
         self.run_metrics()
@@ -694,13 +700,7 @@ class Circuitizer(eqx.Module):
         return out_masks, total_nodes
 
     @eqx.filter_jit
-<<<<<<< HEAD
-    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"],
-                     runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True,
-                     token_prefix=None, llama_ablated=None, return_ablated=False):
-=======
-    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None, do_reduce=True):
->>>>>>> origin/main
+    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None, do_reduce=True, llama_ablated=None, return_ablated=False, token_masks=None):
         saes = self.saes
         ie_resid = self.ie_resid
         ie_attn, ie_transcoder = self.ie_attn, self.ie_transcoder
@@ -710,6 +710,9 @@ class Circuitizer(eqx.Module):
 
         if layers is None:
             layers = self.layers
+
+        if token_masks is None:
+            token_masks = self.masks
 
         for layer in layers:
             block_selection = llama_ablated.select().at_instances_of(LlamaBlock).pick_nth_selected(layer)
@@ -731,7 +734,7 @@ class Circuitizer(eqx.Module):
                         else:
                             avg_weights = None
 
-                        block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, self.masks, ablate_to=avg_weights), x]))
+                        block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, token_masks, ablate_to=avg_weights), x]))
                     except KeyError:
                         pass
                 
@@ -749,7 +752,7 @@ class Circuitizer(eqx.Module):
                         else:
                             avg_weights = None
 
-                        block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, self.masks, ablate_to=avg_weights)]))
+                        block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, token_masks, ablate_to=avg_weights)]))
                     except KeyError:
                         pass
 
@@ -766,7 +769,7 @@ class Circuitizer(eqx.Module):
                         else:
                             avg_weights = None
 
-                        block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, self.masks, x, ablate_to=avg_weights))
+                        block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, token_masks, x, ablate_to=avg_weights))
                     except KeyError:
                         pass
                 n_nodes[0] += n_nodes_attn + n_nodes_mlp + n_nodes_resid
@@ -780,10 +783,19 @@ class Circuitizer(eqx.Module):
     def run_ablated_metrics(self, thresholds, topks=None, inverse=False, layers=None,
                             sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None,
                             do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None,
-                            llama_ablated=None, return_ablated=False, do_reduce=True):
+                            llama_ablated=None, return_ablated=False, do_reduce=True, prompt=None):
         n_nodes_counts = []
         ablated_metrics = []
 
+        token_masks = None
+        if runner is not None:
+            _runner, _tokenizer = runner
+            tokens = _runner.get_tokens(
+                _runner.train_pairs, _tokenizer
+            )["input_ids"]
+            
+            token_masks = make_masks(_tokenizer, tokens, prompt)
+        
         if topks is not None:
             for topk in topks:
                 abl_met, n_nodes = self.ablate_nodes(0, topk=topk, inverse=inverse, layers=layers,
@@ -792,7 +804,7 @@ class Circuitizer(eqx.Module):
                                                      mean_ablate=mean_ablate,
                                                      average_over_positions=average_over_positions,
                                                      token_prefix=token_prefix,
-                                                     llama_ablated=llama_ablated, do_reduce=do_reduce)
+                                                     llama_ablated=llama_ablated, do_reduce=do_reduce, token_masks=token_masks)
                 ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
         else:
@@ -804,7 +816,7 @@ class Circuitizer(eqx.Module):
                                                      average_over_positions=average_over_positions,
                                                      token_prefix=token_prefix,
                                                      llama_ablated=llama_ablated,
-                                                     return_ablated=return_ablated, do_reduce=do_reduce)
+                                                     return_ablated=return_ablated, do_reduce=do_reduce, token_masks=token_masks)
                 if return_ablated:
                     return result
                 abl_met, n_nodes = result
