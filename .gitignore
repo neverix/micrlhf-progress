@@ -1,3 +1,4 @@
+*.json
 data/
 models/
 __pycache__/
