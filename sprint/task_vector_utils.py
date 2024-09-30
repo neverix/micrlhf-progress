@@ -282,6 +282,33 @@ def make_act_adder(llama, tv, tokens, layer, length=1, sep=1599, shift=0, scale=
 
     return add_act
 
+def make_act_adder_detector(llama, tv, tokens, layer, prompt_length, length=1, newline=108, shift=0, scale=1):
+    mask = tokens == newline
+    mask = jnp.roll(mask, -1, axis=-1)
+    mask = mask.at[:, :prompt_length].set(False)
+
+    col_indices = jnp.arange(mask.shape[1])
+
+    col_indices_broadcasted = mask * col_indices
+
+    sorted_indices = jnp.sort(col_indices_broadcasted, axis=1, descending=True)
+
+    k = jnp.sum(mask[0]).astype(int)
+
+    positions = sorted_indices[:, :k]
+
+    positions = jnp.column_stack(
+        tuple(
+            positions + i + shift
+            for i in range(length)
+        )
+    )
+
+    add_act = add_vector(llama, tv, layer, scale, position = positions)
+
+    return add_act
+    
+
 def get_tv(resids, tokens, sep=1599, shift=None):
     mask = tokens == sep
     
@@ -292,9 +319,18 @@ def get_tv(resids, tokens, sep=1599, shift=None):
 
     return tv.mean(axis=0)
 
+def get_tv_detector(resids, tokens, prompt_length, newline=108, shift=None):
+    mask = tokens == newline
+    mask = jnp.roll(mask, -1, axis=-1)
+    mask = mask.at[:, :prompt_length].set(False)
+
+    tv = resids[mask]
+
+    return tv.mean(axis=0)
+
 
 class ICLRunner:
-    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128, prompt=None, eval_size=2, use_same_examples=False, use_same_target=False):
+    def __init__(self, task: str, pairs: list[list[str]], seed=0, batch_size=20, n_shot=5, max_seq_len=128, prompt=None, eval_size=2, use_same_examples=False, use_same_target=False, vector_type="executor"):
         self.task = task
         self.pairs = pairs
         self.seed = seed
@@ -317,7 +353,16 @@ class ICLRunner:
         else:
             self.train_pairs = [self.gen.sample(pairs, k=n_shot) for _ in range(batch_size)]
 
+        # if vector_type == "detector":
+        #     self.train_pairs = [
+        #         ("X -> Y") + x for x in self.train_pairs
+        #     ]
         self.eval_pairs = [self.gen.sample(pairs, k=1) for _ in range(self.eval_batch_size)]
+
+        if vector_type == "detector":
+            self.eval_pairs = [
+                [("X", "Y")] + x for x in self.eval_pairs
+            ]
 
         if prompt is None:
             self.prompt = "<|user|>\nFollow the pattern:\n{}"
@@ -365,8 +410,8 @@ def make_get_resids(llama, layer_target):
 
 class FeatureSearch:
     def __init__(self, task, pairs, target_layer, llama, tokenizer, batch_size=32, n_shot=20, early_stopping_steps=50, 
-                 max_seq_len=256, iterations=2000, seed=9, l1_coeff=2e-2, lr=1e-2, sep=1599, pad_token=32000,
-                 init_w=0.5, sae_v=4, n_first=3, picked_features=None, sae=None, prompt=None):
+                 max_seq_len=256, iterations=2000, seed=9, l1_coeff=2e-2, lr=1e-2, sep=1599, newline=108, pad_token=32000,
+                 init_w=0.5, sae_v=4, n_first=3, picked_features=None, sae=None, prompt=None, feature_type="executor", n_batches=1):
         self.task = task
         self.target_layer = target_layer
         self.sae_v = sae_v
@@ -387,22 +432,35 @@ class FeatureSearch:
         self.llama = llama
         self.tokenizer = tokenizer
         self.sep = sep
+        self.newline = newline
         self.pad_token = pad_token
         self.prompt = prompt
+        self.feature_type = feature_type
+        self.n_batches = n_batches
 
-        self.runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt, eval_size=1)
+        self.prompt_length = tokenizer(self.prompt, return_tensors="np")["input_ids"].shape[1]
+
+        self.runner = ICLRunner(task, pairs, batch_size=batch_size*self.n_batches, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=self.prompt, eval_size=1, vector_type=self.feature_type)
         
         self.train_inputs = tokenized_to_inputs(
             **self.runner.get_tokens(self.runner.train_pairs, tokenizer), llama=llama
         )
 
-        self.eval_inputs = tokenized_to_inputs(
-            **self.runner.get_tokens(self.runner.eval_pairs, tokenizer), llama=llama
-        )
+        self.eval_inputs = [
+            tokenized_to_inputs(
+                **self.runner.get_tokens(self.runner.eval_pairs[i*self.batch_size:(i+1)*self.batch_size], tokenizer), llama=llama
+            ) for i in range(self.n_batches)
+        ]
 
-        self.eval_tokens = self.runner.get_tokens(self.runner.eval_pairs, tokenizer)["input_ids"]
+        # self.eval_tokens = self.runner.get_tokens(self.runner.eval_pairs, tokenizer)["input_ids"]
 
-        self.initial_resids = self.get_initial_resids(self.eval_inputs)
+        self.eval_tokens = [
+            self.runner.get_tokens(self.runner.eval_pairs[i*self.batch_size:(i+1)*self.batch_size], tokenizer)["input_ids"] for i in range(self.n_batches)
+        ]
+
+        self.initial_resids = [
+            self.get_initial_resids(inputs) for inputs in self.eval_inputs
+        ]
 
         self.lwg = jax.value_and_grad(self.get_loss, has_aux=True)
         self.taker = self.make_taker()
@@ -430,20 +488,30 @@ class FeatureSearch:
         # recon = weights_to_resid(weights, self.sae)
 
         recon = recon.astype('bfloat16')
+        
+        loss = 0
 
-        mask = self.eval_tokens == self.sep
-        positions = jnp.argwhere(mask)[:, -1]
-        resids = self.initial_resids.unwrap("batch", "seq", "embedding")
+        for inputs, resids, tokens in zip(self.eval_inputs, self.initial_resids, self.eval_tokens):
+            if self.feature_type == "executor":
+                mask = tokens == self.sep
+            else:
+                mask = tokens == self.newline
+                mask = jnp.roll(mask, -1, axis=-1)
+                mask = mask.at[:, :self.prompt_length].set(False)
 
+            positions = jnp.argwhere(mask)[:, -1]
+            
+            resids = resids.unwrap("batch", "seq", "embedding")
+            modified = jax.vmap(lambda a, b: a.at[b].add(recon))(
+                resids, positions
+            )
+            modified = pz.nx.wrap(modified, "batch", "seq", "embedding")
+        
+            inputs = dataclasses.replace(inputs, tokens=modified)
+            logits = self.taker(inputs).unwrap("batch", "seq", "vocabulary")
+            loss += logprob_loss(logits, tokens, n_first=self.n_first, sep=self.sep, pad_token=self.pad_token)
 
-        modified = jax.vmap(lambda a, b: a.at[b].add(recon))(
-            resids, positions
-        )
-        modified = pz.nx.wrap(modified, "batch", "seq", "embedding")
-
-        inputs = dataclasses.replace(self.eval_inputs, tokens=modified)
-        logits = self.taker(inputs).unwrap("batch", "seq", "vocabulary")
-        loss = logprob_loss(logits, self.eval_tokens, n_first=self.n_first, sep=self.sep, pad_token=self.pad_token)
+        loss /= self.n_batches
 
         # self.l1_coeff *= 1.002
 

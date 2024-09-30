@@ -65,6 +65,34 @@ def logprob_loss_all(logits, tokens, sep, pad, use_softmax=False, do_reduce=True
 
     return logits.mean(axis=0)
 
+def logprob_loss_all_multi(logits, tokens, sep, pad, newline, prompt_length, use_softmax=False, do_reduce=True, n_first=1):
+    if use_softmax:
+        logits = jax.nn.log_softmax(logits)
+    
+    logits = logits[:, :-1]
+
+    mask = np.array(tokens[:, :-1] == sep, dtype=np.int32)
+    mask -= tokens[:, :-1] == pad
+    mask -= tokens[:, :-1] == newline
+
+    mask[:, :prompt_length + 1] = 0
+
+    mask = np.cumsum(mask, axis=-1) > 0
+
+    return mask
+
+    logits = jnp.take_along_axis(logits, tokens[:, 1:, None], axis=-1).squeeze(-1)
+
+    mask = tokens[:, :-1] == sep
+    
+    mask = jnp.logical_and(mask, tokens[:, 1:] != pad)
+
+    logits = logits * mask
+
+    if do_reduce:
+        logits = logits.sum(axis=-1)
+
+    return logits.mean(axis=0)
 
 def load_saes(layers):
     saes = {}
@@ -109,7 +137,7 @@ pad = 0
 
 def metric_fn(logits, resids, tokens, use_softmax=False, do_reduce=True):
     return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax, do_reduce=do_reduce)
-    return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
+    # return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
 
 
 
