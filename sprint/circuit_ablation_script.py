@@ -31,13 +31,14 @@ seed = 10
 task_names = list(tasks.keys())
 
 # Prepare output file for jsonl
-output_filepath = "task_pair_metrics_2.jsonl"
+output_filepath = "task_pair_metrics_3.jsonl"
 
 # Initialize tqdm for progress tracking
-task_pairs_progress = tqdm(total=len(task_names) * (len(task_names)), desc="Processing task pairs")
+# task_pairs_progress = tqdm(total=len(task_names) * (len(task_names)), desc="Processing task pairs")
 
-# Iterate over all pairs of different tasks
-for i, task_name in enumerate(task_names):
+
+def main(task_name):
+
     # Load and prepare first task
     first_task = tasks[task_name]
     first_pairs = list(first_task.items())
@@ -64,8 +65,33 @@ for i, task_name in enumerate(task_names):
     mean_ablate = False
     average_over_positions = True
 
+    # 1. Metrics for first_runner on first_task, while ablating using second_runner
+    first_ablated_metrics, first_n_nodes_counts = circuitizer.run_ablated_metrics(
+        thresholds, 
+        inverse=inverse, 
+        do_abs=do_abs, 
+        mean_ablate=mean_ablate, 
+        average_over_positions=average_over_positions,
+        token_prefix=None, 
+        layers=layers,
+    )
+    first_faithfullness = (np.array(first_ablated_metrics) - first_zero_metric) / (first_orig_metric - first_zero_metric)
+
+    # Save metrics data for first runner
+    first_metrics_data = {
+        "task_pair": (task_name, task_name),
+        "runner": "first_runner",
+        "orig_metric": first_orig_metric,
+        "zero_metric": first_zero_metric,
+        "thresholds": thresholds.tolist(),
+        "n_nodes_counts": first_n_nodes_counts,
+        "ablated_metrics": first_ablated_metrics,
+        "faithfullness": first_faithfullness.tolist(),
+        "layers": layers
+    }
+
     for j, second_task_name in enumerate(task_names):
-        if i == j:
+        if task_name == second_task_name:
             continue
 
         # Load and prepare second task
@@ -78,31 +104,6 @@ for i, task_name in enumerate(task_names):
 
         # Define second runner
         second_runner = ICLRunner(second_task_name, second_pairs, batch_size=batch_size, n_shot=n_few_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt, use_same_examples=False, use_same_target=False)
-
-        # 1. Metrics for first_runner on first_task, while ablating using second_runner
-        first_ablated_metrics, first_n_nodes_counts = circuitizer.run_ablated_metrics(
-            thresholds, 
-            inverse=inverse, 
-            do_abs=do_abs, 
-            mean_ablate=mean_ablate, 
-            average_over_positions=average_over_positions,
-            token_prefix=None, 
-            layers=layers,
-        )
-        first_faithfullness = (np.array(first_ablated_metrics) - first_zero_metric) / (first_orig_metric - first_zero_metric)
-
-        # Save metrics data for first runner
-        first_metrics_data = {
-            "task_pair": (task_name, second_task_name),
-            "runner": "first_runner",
-            "orig_metric": first_orig_metric,
-            "zero_metric": first_zero_metric,
-            "thresholds": thresholds.tolist(),
-            "n_nodes_counts": first_n_nodes_counts,
-            "ablated_metrics": first_ablated_metrics,
-            "faithfullness": first_faithfullness.tolist(),
-            "layers": layers
-        }
 
         # 2. Metrics for second_runner on second_task, while ablating using first_runner
         second_orig_metric = circuitizer.ablated_metric(llama, runner=(second_runner, tokenizer)).tolist()
@@ -140,7 +141,15 @@ for i, task_name in enumerate(task_names):
             jsonl_file.write(json.dumps(second_metrics_data) + "\n")
 
         print(f"Metrics for pair ({task_name}, {second_task_name}) collected and saved.")
-        task_pairs_progress.update(1)
+        # task_pairs_progress.update(1)
 
-task_pairs_progress.close()
-print(f"All metrics collected and saved to {output_filepath}")
+
+from argparse import ArgumentParser
+
+
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument("task_name", type=str, help="Name of the task to run the circuit ablation on.")
+    args = parser.parse_args()
+
+    main(args.task_name)
