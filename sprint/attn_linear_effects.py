@@ -1,29 +1,29 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-cool_feats = """present_simple_past_perfect    8446    -> 15356
-present_simple_past_simple     19628   -> 15356
-en_es                          29228   -> 26987
-en_fr                          29228   -> 26987
-en_it                          11459   -> 26987
-antonyms                       11459   -> 11618
-algo_second                    26436   -> 1878
-person_profession              19916   -> 7491
-location_continent             21327   -> 19260
-location_country               31123   -> 7967
-algo_last                      31123   -> 8633
-person_language                31123   -> 11172
-location_language              13529   -> 11172
-it_en                          11050   -> 5579
-es_en                          1322    -> 5579
-present_simple_gerund          1132    -> 15554
-singular_plural                32115   -> 32417
-location_religion              32115   -> 9178
-fr_en                          3466    -> 16490
-algo_first                     7928    -> 6756
-plural_singular                7928    -> 2930
-country_capital                10884   -> 11173
-football_player_position       99      -> 9790"""
+cool_feats = """present_simple_gerund          8446    -> 15554
+present_simple_past_perfect    19628   -> 15356
+plural_singular                29228   -> 2930
+algo_last                      29228   -> 8633
+location_country               11459   -> 7967
+location_continent             11459   -> 19260
+person_profession              26436   -> 7491
+football_player_position       19916   -> 9790
+present_simple_past_simple     21327   -> 15356
+es_en                          31123   -> 5579
+fr_en                          31123   -> 16490
+it_en                          31123   -> 5579
+country_capital                13529   -> 11173
+antonyms                       11050   -> 11618
+singular_plural                1322    -> 32417
+person_language                1132    -> 11172
+algo_second                    32115   -> 1878
+algo_first                     32115   -> 6756
+location_religion              3466    -> 9178
+en_fr                          7928    -> 26987
+en_it                          7928    -> 26987
+location_language              10884   -> 11172
+en_es                          99      -> 26987"""
 detectors = {}
 executors = {}
 for line in cool_feats.split("\n"):
@@ -170,7 +170,7 @@ def plot_attn(task_name):
         # out_n = pz.nx.wrap(out_raw, "batch", "seq", "kv_heads", "q_rep", "projection")
         # out = attn_layer.attn_value_to_output(out_n)
 
-        next_sae = circuitizer.get_sae(layer=layer)
+        next_sae = circuitizer.get_sae(layer=layer+1)
         attn_sae = circuitizer.get_sae(layer=layer, label="attn_out")
         resid_sae = {k: v.astype(jnp.float32) for k, v in resid_sae.items()}
         attn_sae = {k: v.astype(jnp.float32) for k, v in attn_sae.items()}
