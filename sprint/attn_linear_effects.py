@@ -133,7 +133,7 @@ def plot_attn(task_name):
     pairs = list(task.items())
 
     batch_size = 8
-    n_shot=5
+    n_shot=16
     max_seq_len = 128
     seed = 10
 
@@ -237,6 +237,7 @@ def plot_attn(task_name):
                 proportions_feature = 1 - jax.nn.relu(jnp.minimum(1, proportions_feature))
                 proportions_feature = proportions_feature[~jnp.isnan(proportions_feature)]
                 if not proportions_feature.size:
+                    print(f"Max activation for", layer + 1, target_resid_feature, target_encodings[..., target_resid_feature].max())
                     print("Skipping", source_resid_feature, target_resid_feature, "(no activations)")
                     continue
                 if proportions_feature.max() < 0.1:
