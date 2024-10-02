@@ -74,10 +74,11 @@ pad = 0
 
 
 task_names = [x for x in tasks]
+# task_names = ["antonyms"]
 n_seeds = 10
 
 # n_few_shots, batch_size, max_seq_len = 64, 64, 512
-n_few_shots, batch_size, max_seq_len = 20, 16, 256
+n_few_shots, batch_size, max_seq_len = 16, 16, 128
 
 prompt = "Follow the pattern:\n{}"
 
@@ -93,13 +94,15 @@ seed = 10
 layers = list(range(1, 18))
 # layers = [10, 12, 14]
 
+# layers = [12]
+
 # layer = 12
 for task in tqdm(task_names):
     pairs = list(tasks[task].items())
 
     n_shot = n_few_shots-1
     if task.startswith("algo"):
-        n_shot = 16
+        n_shot = 12
 
     runner = ICLRunner(task, pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt)
 
@@ -117,15 +120,15 @@ for task in tqdm(task_names):
     inputs = tokenized_to_inputs(**tokenized)
     tokens = tokenized["input_ids"]
 
-    logits = llama(inputs)
+    # logits = llama(inputs)
     
-    zero_loss = logprob_loss(
-        logits.unwrap("batch", "seq", "vocabulary"), tokens, shift= 0, n_first=2, sep=sep, pad_token=0
-    )
+    # zero_loss = logprob_loss(
+    #     logits.unwrap("batch", "seq", "vocabulary"), tokens, shift= 0, n_first=2, sep=sep, pad_token=0
+    # )
 
-    print(
-        f"Zero: {task}, Loss: {zero_loss}"  
-    )
+    # print(
+    #     f"Zero: {task}, Loss: {zero_loss}"  
+    # )
 
     for layer in layers:
         sae = get_nev_it_sae_suite(layer)
@@ -136,33 +139,40 @@ for task in tqdm(task_names):
 
         tv = get_tv(resids, train_tokens, shift = 0, sep=sep)
 
-        add_act = make_act_adder(llama, tv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
+        # add_act = make_act_adder(llama, tv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
 
-        logits = add_act(inputs)
+        # logits = add_act(inputs)
 
-        tv_loss = logprob_loss(
-            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
-        )
+        # tv_loss = logprob_loss(
+        #     logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
+        # )
 
-        print(
-            f"TV: {task}, L: {layer}, Loss: {tv_loss}"  
-        )
+        # print(
+        #     f"TV: {task}, L: {layer}, Loss: {tv_loss}"  
+        # )
         
-        pr, _, rtv = sae_encode(sae, tv)
+        # pr, _, rtv = sae_encode(sae, tv)
+        _, pr, rtv = sae_encode(sae, tv)
 
-        add_act = make_act_adder(llama, rtv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
-
-        logits = add_act(inputs)
-
-        recon_loss = logprob_loss(
-            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
-        )
+        l0 = (pr > 0).sum(axis=-1)
 
         print(
-            f"Recon TV: {task}, L: {layer}, Loss: {recon_loss}"  
+            f"L0: {l0}"
         )
 
-        _, gtv = grad_pursuit(tv, sae["W_dec"], 20)
+        # add_act = make_act_adder(llama, rtv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
+
+        # logits = add_act(inputs)
+
+        # recon_loss = logprob_loss(
+        #     logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
+        # )
+
+        # print(
+        #     f"Recon TV: {task}, L: {layer}, Loss: {recon_loss}"  
+        # )
+
+        _, gtv = grad_pursuit(tv, sae["W_dec"], 5   )
 
         add_act = make_act_adder(llama, gtv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
 
@@ -176,36 +186,37 @@ for task in tqdm(task_names):
             f"Grad pursuit TV: {task}, L: {layer}, Loss: {ito_loss}"
         )
 
-        fs = FeatureSearch(task, pairs, layer, llama, tokenizer, n_shot=1, seed=seed+100, init_w=pr, early_stopping_steps=200, n_first=2, sep=sep, pad_token=0, sae_v=8, sae=sae, batch_size=24, iterations=1000, prompt=prompt, l1_coeff=0.05)
+        # fs = FeatureSearch(task, pairs, layer, llama, tokenizer, n_shot=1, seed=seed+100, init_w=pr, early_stopping_steps=200, n_first=2, sep=sep, pad_token=0, sae_v=8, sae=sae, batch_size=24, iterations=1000, prompt=prompt, l1_coeff=0.05)
 
-        w, m = fs.find_weights()
+        # w, m = fs.find_weights()
 
-        _, _, recon = sae_encode(sae, None, pre_relu=w)
+        # _, _, recon = sae_encode(sae, None, pre_relu=w)
         
-        recon = recon.astype('bfloat16')
+        # recon = recon.astype('bfloat16')
 
-        add_act = make_act_adder(llama, recon, tokens, layer, length=1, shift= 0, sep=sep)
+        # add_act = make_act_adder(llama, recon, tokens, layer, length=1, shift= 0, sep=sep)
 
-        logits = add_act(inputs)
+        # logits = add_act(inputs)
 
-        loss = logprob_loss(
-            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
-        )
+        # loss = logprob_loss(
+        #     logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
+        # )
 
-        print(
-            f"Recon fs: {task}, L: {layer}, Loss: {loss}"  
-        )
+        # print(
+        #     f"Recon fs: {task}, L: {layer}, Loss: {loss}"  
+        # )
 
-        with open("cleanup_results_final.jsonl", "a") as f:
+        with open("cleanup_results_final_ito_5.jsonl", "a") as f:
             item = {
                 "task": task,
-                "weights": w.tolist(),
-                "loss": loss.tolist(),
-                "recon_loss": recon_loss.tolist(),
+                # "weights": w.tolist(),
+                # "loss": loss.tolist(),
+                # "recon_loss": recon_loss.tolist(),
+                "sae_l0": l0.tolist(),
                 "ito_loss": ito_loss.tolist(),
-                "tv_loss": tv_loss.tolist(),
-                "zero_loss": zero_loss.tolist(),
-                "tv": tv.tolist(),
+                # "tv_loss": tv_loss.tolist(),
+                # "zero_loss": zero_loss.tolist(),
+                # "tv": tv.tolist(),
                 "layer": layer
             }
 

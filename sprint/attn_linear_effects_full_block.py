@@ -7,7 +7,7 @@ plural_singular                29228   -> 2930
 algo_last                      29228   -> 8633
 location_country               11459   -> 7967
 location_continent             11459   -> 19260
-person_profession              26436   -> 7491
+person_profession              26436   -> 18416
 football_player_position       19916   -> 9790
 present_simple_past_simple     21327   -> 15356
 es_en                          31123   -> 5579
@@ -141,7 +141,7 @@ def plot_attn(task_name):
     pairs = list(task.items())
 
     batch_size = 8
-    n_shot=16
+    n_shot=12
     max_seq_len = 128
     seed = 10
 
@@ -209,7 +209,7 @@ def plot_attn(task_name):
             # source_resid_feature = biggest_feature
             # attn_out_feature = biggest_attn_feature
             r_pre = circuitizer.resids_pre[layer].astype(jnp.float32)
-            # r_mid = circuitizer.resids_mid[layer].astype(jnp.float32)
+            r_mid = circuitizer.resids_mid[layer].astype(jnp.float32)
             # attn_out = r_mid - r_pre
             # _, pre_encodings, recon = sae_encode(resid_sae, r_pre)
             # pre_encodings = pre_encodings * jnp.zeros(pre_encodings.shape[-1]).at[source_resid_feature].set(25)
@@ -224,12 +224,17 @@ def plot_attn(task_name):
 
 
             r_other = r_pre
+
+            _, feature_activation, _ = sae_encode(resid_sae, r_other)
+            feature_activation = feature_activation[..., source_resid_feature]
+            average_activation = feature_activation.mean()
+
+            if average_activation < 1e-6:
+                continue
+
             direction = resid_sae["W_dec"][source_resid_feature]
             direction = direction / jnp.linalg.norm(direction)
-            r_other = r_other - direction * 15
-
-
-
+            r_other = r_other - direction * average_activation * 50
             r_other_n = pz.nx.wrap(r_other, "batch", "seq", "embedding")
 
             attn_input = attn_ln(r_other_n)
@@ -238,14 +243,17 @@ def plot_attn(task_name):
             qk = circuitizer.qk[layer]
             qk_n = pz.nx.wrap(qk, "batch", "kv_heads", "q_rep", "seq", "kv_seq")
             out_n = attn_layer.attn_value_to_output((qk_n, v_n))
-            
+        
             mlp_subblock = circuitizer.llama.select().at_instances_of(LlamaBlock).pick_nth_selected(layer).at_instances_of(pz.nn.Residual).pick_nth_selected(1).get()
+
+            out_n = out_n + r_other_n
 
             out_n = mlp_subblock(out_n)
 
             out = out_n.unwrap("batch", "seq", "embedding").astype(jnp.float32)
 
-            next_resid_new = r_other + out
+            next_resid_new = out
+
             
             # out = out_n.unwrap("batch", "seq", "embedding").astype(jnp.float32)
             # _, alt_attn_encodings, _ = sae_encode(attn_sae, out)
@@ -259,6 +267,7 @@ def plot_attn(task_name):
             #     plt.show()
             
             next_resid = circuitizer.resids_pre[layer + 1].astype(jnp.float32)
+
             _, target_encodings, _ = sae_encode(next_sae, next_resid)
             # _, alt_target_encodings, _ = sae_encode(next_sae, next_resid + (out - attn_out))
             # _, alt_target_encodings, _ = sae_encode(next_sae, next_resid + (attn_out - out))
@@ -287,7 +296,7 @@ def plot_attn(task_name):
                 # plt.savefig(f"data/attn_out/{task_name}_{layer}_{source_resid_feature}_{layer}_{layer+1}_{target_resid_feature}.png")
                 # plt.close()
 
-                with open("micrlhf-progress/attn_results_3.jsonl", "a") as f:
+                with open("micrlhf-progress/attn_results_4.jsonl", "a") as f:
                     f.write(json.dumps({
                         "task": task_name,
                         "source": source_resid_feature,
