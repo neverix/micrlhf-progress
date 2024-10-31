@@ -12,8 +12,8 @@ if "models" not in os.listdir("."):
 # In[2]:
 
 
-# get_ipython().run_line_magic('load_ext', 'autoreload')
-# get_ipython().run_line_magic('autoreload', '2')
+# %load_ext autoreload
+# %autoreload 2
 import penzai
 from penzai import pz
 # pz.ts.register_as_default()
@@ -65,7 +65,7 @@ get_resids_one_hot = get_resids.select().at_instances_of(pz.nn.EmbeddingLookup).
 get_resids_one_hot_call = jit_wrapper.Jitted(get_resids_one_hot)
 
 
-# In[6]:
+# In[10]:
 
 
 from micrlhf.sampling import sample, trange, jnp, load_tokenizer, jit_wrapper
@@ -88,11 +88,11 @@ bs_start = llama.mesh.shape["dp"]
 n_x = 20
 # n_x = 32
 has_end = False
-tokens_init = tokenizer.encode(f"X{' X' * (n_x - 1)}")
+tokens_init = tokenizer.encode(f"<start_of_turn>user\nX{' X' * (n_x - 1)}")
 optim_mask = ["X" in tokenizer.decode([token]) for token in tokens_init]
 assert sum(optim_mask) == n_x
 tokens_init = np.asarray(tokens_init)
-MAX_ELITES = 8
+MAX_ELITES = 16
 PROB_SWAP = 0.1  # probability of a swap
 PROB_GRADS = 0.8    # probability of using gradients 
 tokens_init = np.repeat(tokens_init[None, :], MAX_ELITES, axis=0)
@@ -142,8 +142,6 @@ def temper(logits, key, elites, grads, max_inv_temp, expected_changes):
     logit = logit * jax.random.uniform(key_uniform, minval=0, maxval=max_inv_temp)
     use_grads = jax.random.bernoulli(key_use_grads, p=PROB_GRADS).astype(jnp.int_)
     logit = jax.lax.switch(use_grads, ((lambda x: x), (lambda x: jnp.where(grads, x, -jnp.inf))), logit)
-    # print(expected_changes - 1)
-    # print(jnp.maximum)
     to_change = jax.random.bernoulli(key_bernoulli, jnp.maximum(.5, expected_changes - 1) / mask.sum(), mask.shape)
     definite_indices = jax.random.randint(key_randint, mask.shape[:-1], 0, mask.shape[-1])
     definite_mask = jax.nn.one_hot(definite_indices, to_change.shape[-1], dtype=jnp.bool_)
@@ -172,7 +170,7 @@ def temper(logits, key, elites, grads, max_inv_temp, expected_changes):
     return changed
 
 # @partial(jax.jit, static_argnames=("key", "candidates", "expected_changes"))
-def algo_iteration(elites, vector, key, candidates=128, seed=13, expected_changes=1.5, max_inv_temp=2, topk=128):
+def algo_iteration(elites, vector, key, candidates=64, seed=13, expected_changes=1.5, max_inv_temp=2, topk=128):
     elites = elites.untag("solutions").tag("batch")
     logits, _, _, grads = run_tokens(elites, grad_metric=lambda _l, r, _i: (r[key][{"seq": -1}].untag("embedding") * vector).sum().data_array.mean())
     grads = pz.nx.nmap(lambda x: x >= jax.lax.top_k(x, topk)[0][-1])(grads.untag("vocabulary")).tag("vocabulary")
@@ -205,36 +203,10 @@ import jax.numpy as jnp
 layer = 12
 sae = get_jb_it_sae()
 dictionary = sae["W_dec"]
-for feature in (
-    # [2079] * 3 # hmm
-    # [5373] * 3 +  # same word repetition
-    # [8361] * 3 + # male + female name
-    # [5324] * 3 + # pair of names
-    # [12017] * 3  # pair of opposites
-# 330 - strong induction
-# 8618 - translation
-# refusal
-# 15553 - present shocking things
-# 14018 - right-wing newline
-# 4597 - can’t comment
-# 14151 - rude, newline
-# 11256 - never do violent action
-# 12701 - content warning
-# 11046 - quote from CIA
-# 10689 - whether things are legal or illegal
-    [321] * 3 + # animal care
-    [330] * 3 + # strong induction
-    [8618] * 3 + # translation
-    [15553] * 3 + # present shocking things
-    [14018] * 3 + # right-wing newline
-    [4597] * 3 + # can’t comment
-    [14151] * 3 + # rude, newline
-    [11256] * 3 + # never do violent action
-    [12701] * 3 + # content warning
-    [11046] * 3 + # quote from CIA
-    [10689] * 3 # whether things are legal or illegal
-    
-):
+features = [321, 330, 2079, 5324, 5373, 8361, 8618, 8631, 12017]
+features += [4597, 10681, 11046, 11256, 12701, 15553]
+features *= 3
+for feature in features:
     vector = dictionary[feature]
     vector = vector / jnp.linalg.norm(vector)
     sae_type = "Residual"
@@ -248,7 +220,7 @@ for feature in (
     toks_init[:, optim_mask] = np.random.randint(100, tokenizer.vocab_size, toks_init[:, optim_mask].shape)
     best_metrics = None
     best = tokens_to_array(toks_init).untag("batch").tag("solutions")
-    xent_min = 1
+    xent_min = 1/20
     xent_max = 20
     weights = jnp.stack((
         -jnp.exp(jnp.linspace(jnp.log(xent_min), jnp.log(xent_max), MAX_ELITES))[::-1],
@@ -276,7 +248,7 @@ for feature in (
             m = {}
             for index in range(MAX_ELITES):
                 i = index
-                m |= {f"decoded.{i}": tokenizer.decode(best[{"solutions": index}].unwrap("seq")),
+                m |= {f"decoded.{i}": tokenizer.decode(best[{"solutions": index}].unwrap("seq")).replace("\n", "\\n"),
                     f"loss.{i}": best_metrics[index][0], f"score.{i}": best_metrics[index][1]}
             bar.set_postfix(**m)
     except KeyboardInterrupt:
