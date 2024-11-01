@@ -206,7 +206,9 @@ sae = get_jb_it_sae()
 dictionary = sae["W_dec"]
 # features = [321, 330, 2079, 5324, 5373, 8361, 8618, 8631, 12017]
 # features += [4597, 10681, 11046, 11256, 12701, 15553]
+random.seed(3)
 features = random.sample(list(range(16384)), 100)
+features *= 3
 for feature in features:
     vector = dictionary[feature]
     vector = vector / jnp.linalg.norm(vector)
