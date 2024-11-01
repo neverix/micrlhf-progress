@@ -192,26 +192,30 @@ def sae_encode_threshold(sae, vector, pre_relu=None, keep_features=None, ablate_
 
     return pre_relu, post_relu, recon
 
-def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None, ablate_to=0):
+def sae_encode_gated(sae, vector, ablate_features=None, keep_features=None, pre_relu=None, post_relu=None, ablate_to=0):
     inputs = vector
 
     s = jax.nn.softplus(sae["s_gate"]) * sae["scaling_factor"]
+
+    if post_relu is None:
+        if pre_relu is None:
+            if "norm_factor" in sae:
+                inputs = inputs * sae["norm_factor"]
+
+            pre_relu = inputs @ sae["W_enc"]
+            pre_relu = pre_relu +sae["b_enc"]
+            pre_relu = pre_relu * s
+
+            if keep_features is not None:
+                pre_relu = pre_relu * keep_features + ablate_to * (1 - keep_features)
+
+        post_relu = jax.nn.relu(pre_relu)
     
-    if pre_relu is None:
-        if "norm_factor" in sae:
-            inputs = inputs * sae["norm_factor"]
-
-        pre_relu = inputs @ sae["W_enc"]
-        pre_relu = pre_relu +sae["b_enc"]
-        pre_relu = pre_relu * s
-
-    if keep_features is not None:
-        pre_relu = pre_relu * keep_features + ablate_to * (1 - keep_features)
-
-    post_relu = jax.nn.relu(pre_relu)
     threshold = jnp.maximum(0, sae["b_gate"] - sae["b_enc"] * s)
     post_relu = (post_relu > threshold) * post_relu
 
+    if keep_features is not None:
+        post_relu = post_relu * keep_features + ablate_to * (1 - keep_features)
     
         # axes = tuple(range(post_relu.ndim - 1))
         

@@ -57,7 +57,8 @@ def logprob_loss_all(logits, tokens, sep, pad, use_softmax=False, do_reduce=True
     mask = tokens[:, :-1] == sep
     
     mask = jnp.logical_and(mask, tokens[:, 1:] != pad)
-
+    # mask = mask.at[:, :20].set(False)
+    
     logits = logits * mask
 
     if do_reduce:
@@ -114,19 +115,23 @@ def load_saes(layers):
 def sfc_simple(grad, resid, target, sae, ablate_to=0):
     pre_relu, post_relu, recon = sae_encode_gated(sae, resid)
 
-    # post_relu = post_relu.astype(jnp.float32)
-    pre_relu = pre_relu.astype(jnp.float32)
+    post_relu = post_relu.astype(jnp.float32)
+    # pre_relu = pre_relu.astype(jnp.float32)
     error = target - recon
     # f = partial(weights_to_resid, sae=sae)
     
-    def f(pre_relu):
-        _, _, recon = sae_encode_gated(sae, None, pre_relu=pre_relu)
-        return recon
+    # def f(pre_relu):
+    #     _, _, recon = sae_encode_gated(sae, None, pre_relu=pre_relu)
+    #     return recon
+
+    def f(post_relu):
+        _, _, recon = sae_encode_gated(sae, None, post_relu=post_relu)
+        return recon  
 
     grad = grad.astype(jnp.float32)
-    sae_grad, = jax.vjp(f, pre_relu)[1](grad,)
+    sae_grad, = jax.vjp(f, post_relu)[1](grad,)
     # indirect_effects = sae_grad * post_relu
-    indirect_effects = sae_grad * pre_relu
+    indirect_effects = sae_grad * post_relu
     indirect_effects_error = jnp.einsum("...f, ...f -> ...", grad, error)
     return indirect_effects, indirect_effects_error, sae_grad, error
 
@@ -135,7 +140,7 @@ sep = 3978
 newline = 108
 pad = 0
 
-def metric_fn(logits, resids, tokens, use_softmax=False, do_reduce=True):
+def metric_fn(logits, resids, tokens, use_softmax=True, do_reduce=True):
     return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax, do_reduce=do_reduce)
     # return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
 
@@ -181,18 +186,21 @@ def make_masks(tokenizer, tokens, prompt):
     prompt_length = len(tokenizer.tokenize(prompt))
 
     masks = [
-        ("prompt", jnp.zeros_like(tokens).at[:, :prompt_length].set(1).astype(bool)),
+        # ("prompt", jnp.zeros_like(tokens).at[:, :prompt_length].set(1).astype(bool)),
         ("input", jnp.roll(tokens == sep, -1, axis=-1).at[:, :prompt_length].set(False)),
         ("arrow", jnp.array(tokens == sep).at[:, :prompt_length].set(False)), 
         ("output", jnp.roll(tokens == newline, -1, axis=-1).at[:, :prompt_length].set(False)),
         ("newline", jnp.array(tokens == newline).at[:, :prompt_length].set(False)),
     ]
 
+    for i in range(0, prompt_length):
+        masks.append((f"prompt_{i}", jnp.zeros_like(tokens).at[:, i].set(1).astype(bool)))
+
     remaining_mask = tokens != pad
     for mask_name, mask in masks:
         remaining_mask = jnp.logical_and(remaining_mask, jnp.logical_not(mask))
 
-    masks.append(("remaining", remaining_mask))
+    # masks.append(("remaining", remaining_mask))
 
     masks = OrderedDict(masks)
 
@@ -231,11 +239,17 @@ class Circuitizer(eqx.Module):
     # attn_rms_out: List[jax.typing.ArrayLike]
     mlp_rms: List[jax.typing.ArrayLike]
     # mlp_rms_out: List[jax.typing.ArrayLike]
+
+    batch_size: int
+    n_shot: int
     
 
     def __init__(self, llama: LlamaTransformer, tokenizer: AutoTokenizer, runner: ICLRunner, layers: List[int], prompt: str):
         self.llama = llama
         self.layers = layers
+
+        self.batch_size = runner.batch_size
+        self.n_shot = runner.n_shot
 
         self.train_tokens = runner.get_tokens(
             runner.train_pairs, tokenizer
@@ -595,19 +609,36 @@ class Circuitizer(eqx.Module):
         return ie
     # float((ie_pre_to_pre_features(6, grad_pre[6], "arrow") - mask_average(ie_error_resid[6], "arrow")).sum())
 
-    def mask_average(self, vector, mask, average_over_positions=True):
-        if isinstance(mask, jax.Array):
-            mask = jax.lax.select_n(mask, *self.masks.values())
+    def mask_average(self, vector, _mask, average_over_positions=True):
+        if isinstance(_mask, jax.Array):
+            mask = jax.lax.select_n(_mask, *self.masks.values())
         else:
-            mask = self.masks[mask]
+            mask = self.masks[_mask]
         while mask.ndim < vector.ndim:
             mask = mask[..., None]
 
         if average_over_positions:
-            return ((mask * vector).sum(1) / mask.sum(1)).mean(0)
+            return ((mask * vector).sum(1)).sum(0)
 
         else:
-            return (mask * vector).mean(0)  
+            # return (mask * vector).mean(0)
+            if _mask == "remaining":
+                return (mask * vector).mean(0)
+
+            indices = jnp.argwhere(mask, size=self.batch_size * self.n_shot)[:, 1].reshape(self.batch_size, -1)
+
+            indices = indices[:, :, None] 
+
+            collected = jnp.take_along_axis(vector, indices, axis=1)
+            mean_values = collected.mean(0)
+
+            tiled = jnp.tile(mean_values, (self.batch_size, 1))
+
+            output = jnp.zeros_like(vector)
+            
+            output = output.at[jnp.where(mask.squeeze(), size=self.batch_size * self.n_shot)].set(tiled)
+
+            return output
         
     def grad_through_transcoder(self, layer, grad):
         sae = self.get_sae(layer, label="transcoder")
@@ -678,7 +709,7 @@ class Circuitizer(eqx.Module):
             return f(resid)
 
     @eqx.filter_jit
-    def ablated_metric(self, llama_ablated, runner=None, do_reduce=True):
+    def ablated_metric(self, llama_ablated, runner=None, do_reduce=True, inputs=None):
 
         if runner is not None:
             runner, tokenizer = runner
@@ -690,13 +721,14 @@ class Circuitizer(eqx.Module):
             inputs = self.llama.inputs.from_basic_segments(tokens_wrapped)
 
         else:
-            inputs = self.llama_inputs
+            if inputs is None:
+                inputs = self.llama_inputs
             tokens = self.train_tokens
 
         ablated_logits = llama_ablated(inputs)
         return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, tokens, use_softmax=True, do_reduce=do_reduce)
 
-    def mask_ie(self, ie, threshold, topk=None, inverse=False, token_types=None, do_abs=True, average_over_positions=True, token_prefix=None):
+    def mask_ie(self, ie, threshold, topk=None, inverse=False, token_types=None, do_abs=True, average_over_positions=True, token_prefix=None, features_to_mask=None):
         out_masks = {}
         total_nodes = 0
 
@@ -706,6 +738,13 @@ class Circuitizer(eqx.Module):
         for mask in self.masks:
             ie_averaged = self.mask_average(ie, mask, average_over_positions=average_over_positions)
             # ie_averaged = jnp.abs(ie_averaged)
+
+            if features_to_mask is not None:
+                out_masks[mask] = jnp.ones_like(ie_averaged).astype(bool)
+                
+                if mask in features_to_mask:
+                    out_masks[mask] = out_masks[mask].at[features_to_mask[mask]].set(False)
+                continue
 
             if mask not in token_types:
                 out_masks[mask] = jnp.ones_like(ie_averaged).astype(bool)
@@ -728,7 +767,7 @@ class Circuitizer(eqx.Module):
         return out_masks, total_nodes
 
     @eqx.filter_jit
-    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None, do_reduce=True, llama_ablated=None, return_ablated=False, token_masks=None):
+    def ablate_nodes(self, threshold, topk=None, inverse=False, layers=None, sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None, do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None, do_reduce=True, llama_ablated=None, return_ablated=False, token_masks=None, feature_masks=None):
         saes = self.saes
         ie_resid = self.ie_resid
         ie_attn, ie_transcoder = self.ie_attn, self.ie_transcoder
@@ -747,11 +786,18 @@ class Circuitizer(eqx.Module):
 
             def converter(block):
                 n_nodes_resid, n_nodes_attn, n_nodes_mlp = 0, 0, 0
+                features_to_mask = None
 
                 if "resid" in sae_types:
                     try:
                         resid = saes[(layer, "resid")]
-                        mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs, average_over_positions=average_over_positions, token_prefix=token_prefix)
+                        # features_to_mask = None
+                        if feature_masks is not None:
+                            # features_to_mask = feature_masks["resid"]
+                            mask_resid = feature_masks[layer]["resid"]
+                            n_nodes_resid = 0
+                        else:
+                            mask_resid, n_nodes_resid = self.mask_ie(ie_resid[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs, average_over_positions=average_over_positions, token_prefix=token_prefix, features_to_mask=features_to_mask)
 
                         if mean_ablate:
                             weights, _, _ = sae_encode_gated(resid, self.resids_pre[layer])
@@ -769,7 +815,13 @@ class Circuitizer(eqx.Module):
                 if "attn_out" in sae_types:
                     try:
                         attn_out = saes[(layer, "attn_out")]
-                        mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs, average_over_positions=average_over_positions, token_prefix=token_prefix)
+
+                        features_to_mask = None
+                        if feature_masks is not None:
+                            mask_attn_out = feature_masks[layer]["attn_out"]
+                            n_nodes_attn = 0
+                        else:
+                            mask_attn_out, n_nodes_attn = self.mask_ie(ie_attn[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs, average_over_positions=average_over_positions, token_prefix=token_prefix, features_to_mask=features_to_mask)
 
                         if mean_ablate:
                             weights, _, _ = sae_encode_gated(attn_out, self.resids_mid[layer] - self.resids_pre[layer])
@@ -787,7 +839,14 @@ class Circuitizer(eqx.Module):
                 if "transcoder" in sae_types:
                     try:
                         transcoder = saes[(layer, "transcoder")]
-                        mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs, average_over_positions=average_over_positions, token_prefix=token_prefix)
+
+                        features_to_mask = None
+
+                        if feature_masks is not None:
+                            mask_transcoder = feature_masks[layer]["transcoder"]
+                            n_nodes_mlp = 0
+                        else:
+                            mask_transcoder, n_nodes_mlp = self.mask_ie(ie_transcoder[layer], threshold, topk, inverse=inverse, token_types=token_types, do_abs=do_abs, average_over_positions=average_over_positions, token_prefix=token_prefix, features_to_mask=features_to_mask)
 
                         if mean_ablate:
                             weights, _, _ = sae_encode_gated(transcoder, self.mlp_normalize(layer, self.resids_mid[layer]))
@@ -808,10 +867,57 @@ class Circuitizer(eqx.Module):
             return llama_ablated
         return self.ablated_metric(llama_ablated, runner=runner), n_nodes[0]
 
+    @eqx.filter_jit
+    def ablate_feature_masks(self, feature_masks, layer):
+        saes = self.saes
+        ie_resid = self.ie_resid
+        ie_attn, ie_transcoder = self.ie_attn, self.ie_transcoder
+        token_masks = self.masks
+
+        llama_ablated = self.llama
+
+
+
+        block_selection = llama_ablated.select().at_instances_of(LlamaBlock).pick_nth_selected(layer)
+
+        def converter(block):
+
+            try:
+                resid = saes[(layer, "resid")]
+                # features_to_mask = None
+                mask_resid = feature_masks["resid"]
+
+                block = block.select().at_instances_of(LlamaBlock).apply(lambda x: pz.nn.Sequential([AblatedModule.wrap(resid, mask_resid, token_masks, ablate_to=None), x]))
+            except KeyError:
+                pass
+            
+            try:
+                attn_out = saes[(layer, "attn_out")]
+
+                mask_attn_out = feature_masks["attn_out"] 
+
+                block = block.select().at_instances_of(LlamaAttention).apply(lambda x: pz.nn.Sequential([x, AblatedModule.wrap(attn_out, mask_attn_out, token_masks, ablate_to=None)]))
+            except KeyError:
+                pass
+
+            try:
+                transcoder = saes[(layer, "transcoder")]
+
+                mask_transcoder = feature_masks["transcoder"]
+
+                block = block.select().at_instances_of(LlamaMLP).apply(lambda x: AblatedModule.wrap(transcoder, mask_transcoder, token_masks, x, ablate_to=None))
+            except KeyError:
+                pass
+
+            return block
+
+        llama_ablated = block_selection.apply(converter)
+        return self.ablated_metric(llama_ablated, runner=None)
+
     def run_ablated_metrics(self, thresholds, topks=None, inverse=False, layers=None,
                             sae_types=["resid", "transcoder", "attn_out"], runner=None, token_types=None,
                             do_abs=True, mean_ablate=False, average_over_positions=True, token_prefix=None,
-                            llama_ablated=None, return_ablated=False, do_reduce=True, prompt=None):
+                            llama_ablated=None, return_ablated=False, do_reduce=True, prompt=None, feature_masks=None, silent=False):
         n_nodes_counts = []
         ablated_metrics = []
 
@@ -836,7 +942,10 @@ class Circuitizer(eqx.Module):
                 ablated_metrics.append(float(abl_met))
                 n_nodes_counts.append(int(n_nodes))
         else:
-            for threshold in tqdm(thresholds):
+            if not silent:
+                thresholds = tqdm(thresholds)
+
+            for threshold in thresholds:
                 result = self.ablate_nodes(threshold, inverse=inverse, layers=layers,
                                                      sae_types=sae_types, runner=runner,
                                                      token_types=token_types, do_abs=do_abs,
@@ -844,7 +953,8 @@ class Circuitizer(eqx.Module):
                                                      average_over_positions=average_over_positions,
                                                      token_prefix=token_prefix,
                                                      llama_ablated=llama_ablated,
-                                                     return_ablated=return_ablated, do_reduce=do_reduce, token_masks=token_masks)
+                                                     return_ablated=return_ablated, do_reduce=do_reduce, token_masks=token_masks,
+                                                     feature_masks=feature_masks)
                 if return_ablated:
                     return result
                 abl_met, n_nodes = result
@@ -852,6 +962,12 @@ class Circuitizer(eqx.Module):
                 n_nodes_counts.append(int(n_nodes))
 
         return ablated_metrics, n_nodes_counts
+
+    def run_ablate_feature_masks(self, feature_masks, layer):
+        ablated_metrics = []
+        for feature_mask in feature_masks:
+            ablated_metrics.append(float(self.ablate_feature_masks(feature_mask, layer)))
+        return ablated_metrics
 
     from tqdm import tqdm, trange
 
