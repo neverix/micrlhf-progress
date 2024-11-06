@@ -141,8 +141,8 @@ newline = 108
 pad = 0
 
 def metric_fn(logits, resids, tokens, use_softmax=True, do_reduce=True):
-    # return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax, do_reduce=do_reduce)
-    return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
+    return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax, do_reduce=do_reduce)
+    # return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
 
 
 
