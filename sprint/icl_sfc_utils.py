@@ -141,8 +141,8 @@ newline = 108
 pad = 0
 
 def metric_fn(logits, resids, tokens, use_softmax=True, do_reduce=True):
-    return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax, do_reduce=do_reduce)
-    # return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
+    # return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax, do_reduce=do_reduce)
+    return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
 
 
 
@@ -193,7 +193,7 @@ def make_masks(tokenizer, tokens, prompt):
         ("newline", jnp.array(tokens == newline).at[:, :prompt_length].set(False)),
     ]
 
-    for i in range(0, prompt_length):
+    for i in range(1, prompt_length):
         masks.append((f"prompt_{i}", jnp.zeros_like(tokens).at[:, i].set(1).astype(bool)))
 
     remaining_mask = tokens != pad
@@ -621,7 +621,7 @@ class Circuitizer(eqx.Module):
             return ((mask * vector).sum(1)).sum(0)
 
         else:
-            # return (mask * vector).mean(0)
+            return (mask * vector).sum(0)
             if _mask == "remaining":
                 return (mask * vector).mean(0)
 
