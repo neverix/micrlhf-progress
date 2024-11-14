@@ -18,6 +18,7 @@ from sprint.task_vector_utils import load_tasks, ICLRunner
 from tqdm.auto import tqdm, trange
 
 
+
 def logprob_loss(logits, tokens, sep=1599, pad_token=32000, n_first=None, shift=None, use_softmax=False):
     if use_softmax:
         logits = jax.nn.log_softmax(logits)
@@ -57,12 +58,12 @@ def logprob_loss_all(logits, tokens, sep, pad, use_softmax=False, do_reduce=True
     mask = tokens[:, :-1] == sep
     
     mask = jnp.logical_and(mask, tokens[:, 1:] != pad)
-    # mask = mask.at[:, :20].set(False)
+    mask = mask.at[:, :10].set(False)
     
     logits = logits * mask
 
     if do_reduce:
-        logits = logits.sum(axis=-1)
+        logits = logits.sum(axis=-1) / mask.sum(axis=-1)
 
     return logits.mean(axis=0)
 
@@ -140,7 +141,7 @@ sep = 3978
 newline = 108
 pad = 0
 
-def metric_fn(logits, resids, tokens, use_softmax=True, do_reduce=True):
+def metric_fn(logits, resids, tokens, use_softmax=False , do_reduce=True):
     return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax, do_reduce=do_reduce)
     # return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
 
@@ -193,7 +194,7 @@ def make_masks(tokenizer, tokens, prompt):
         ("newline", jnp.array(tokens == newline).at[:, :prompt_length].set(False)),
     ]
 
-    for i in range(0, prompt_length):
+    for i in range(1, prompt_length):
         masks.append((f"prompt_{i}", jnp.zeros_like(tokens).at[:, i].set(1).astype(bool)))
 
     remaining_mask = tokens != pad
@@ -618,10 +619,11 @@ class Circuitizer(eqx.Module):
             mask = mask[..., None]
 
         if average_over_positions:
+            # return ((mask * vector).sum(1)).sum(0)
             return ((mask * vector).sum(1)).sum(0)
 
         else:
-            # return (mask * vector).mean(0)
+            return (mask * vector).sum(0)
             if _mask == "remaining":
                 return (mask * vector).mean(0)
 
@@ -726,7 +728,7 @@ class Circuitizer(eqx.Module):
             tokens = self.train_tokens
 
         ablated_logits = llama_ablated(inputs)
-        return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, tokens, use_softmax=True, do_reduce=do_reduce)
+        return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, tokens, use_softmax=False, do_reduce=do_reduce)
 
     def mask_ie(self, ie, threshold, topk=None, inverse=False, token_types=None, do_abs=True, average_over_positions=True, token_prefix=None, features_to_mask=None):
         out_masks = {}
