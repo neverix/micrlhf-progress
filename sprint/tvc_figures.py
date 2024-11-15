@@ -45,13 +45,15 @@ def plot_pareto_frontier(task, layer, data, output_path):
         pareto_points = pareto_points[sorted_indices]
         
         # Plot all points and Pareto frontier
-        label = f"{technique} - {param}"
+        label = f"{technique}"
         marker = markers[hash(technique + param) % len(markers)]
         plt.scatter(l0_values, loss_values, alpha=0.5, marker=marker, label=label)
         plt.plot(pareto_points[:, 0], pareto_points[:, 1], '--', alpha=0.7)
 
     plt.xlabel('L0 Norm')
     plt.ylabel('Loss')
+    plt.xscale("log")
+    plt.yscale("log")
     plt.title(f'Pareto Frontier for {task} - Layer {layer}')
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.grid(True, alpha=0.3)
