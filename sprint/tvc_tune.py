@@ -204,6 +204,8 @@ sweep_results = defaultdict(lambda: defaultdict(dict))
 l1_coeffs = [1e-5, 1e-4, 1e-3, 5e-2, 1e-1]
 k_tvs = [5, 10, 20, 30, 40, 50, 100]
 
+save_to = f"data/l1_sweep_results_{'phi' if use_phi else 'gemma'}.json"
+
 # layer = 12
 for task in tqdm(task_names):
     pairs = list(tasks[task].items())
@@ -291,10 +293,10 @@ for task in tqdm(task_names):
                                seed=seed+100, init_w=pr, early_stopping_steps=50,
                                n_first=2, sep=sep, pad_token=0, sae_v=8, sae=sae,
                                batch_size=24, iterations=1000, prompt=prompt,
-                               l1_coeff=l1_coeff, n_batches=4, lr=0.04)
+                               l1_coeff=jnp.array(l1_coeff), n_batches=1, lr=0.04)
 
             _, metrics = fs.find_weights()
             l0, loss = metrics["l0"], float(metrics["loss"])
             print("L0:", l0, "Loss:", loss)
             sweep_results[key][l1_coeff] = (l0, loss)
-        json.dump(sweep_results, open("data/l1_sweep_results.json", "w"))
+        json.dump(sweep_results, open(save_to, "w"))
