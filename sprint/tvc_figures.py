@@ -26,31 +26,29 @@ def plot_pareto_frontier(task, layer, data, output_path):
     markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*']
     
     for technique, param_data in data.items():
+        l0_values = []
+        loss_values = []
+        print(technique, param_data)
         for param, value_data in param_data.items():
-            l0_values = []
-            loss_values = []
-            
-            # Extract L0 and loss values
-            for value, metrics in value_data.items():
-                l0_values.append(metrics[0])  # L0
-                loss_values.append(metrics[1])  # Loss
-            
-            # Convert to numpy arrays for efficient computation
-            points = np.column_stack((l0_values, loss_values))
-            
-            # Find Pareto frontier points
-            pareto_mask = is_pareto_efficient(points)
-            
-            # Sort points for line plotting
-            pareto_points = points[pareto_mask]
-            sorted_indices = np.argsort(pareto_points[:, 0])
-            pareto_points = pareto_points[sorted_indices]
-            
-            # Plot all points and Pareto frontier
-            label = f"{technique} - {param}"
-            marker = markers[hash(technique + param) % len(markers)]
-            plt.scatter(l0_values, loss_values, alpha=0.5, marker=marker, label=label)
-            plt.plot(pareto_points[:, 0], pareto_points[:, 1], '--', alpha=0.7)
+            l0_values.append(value_data[0])
+            loss_values.append(value_data[1])
+        
+        # Convert to numpy arrays for efficient computation
+        points = np.column_stack((l0_values, loss_values))
+        
+        # Find Pareto frontier points
+        pareto_mask = is_pareto_efficient(points)
+        
+        # Sort points for line plotting
+        pareto_points = points[pareto_mask]
+        sorted_indices = np.argsort(pareto_points[:, 0])
+        pareto_points = pareto_points[sorted_indices]
+        
+        # Plot all points and Pareto frontier
+        label = f"{technique} - {param}"
+        marker = markers[hash(technique + param) % len(markers)]
+        plt.scatter(l0_values, loss_values, alpha=0.5, marker=marker, label=label)
+        plt.plot(pareto_points[:, 0], pareto_points[:, 1], '--', alpha=0.7)
 
     plt.xlabel('L0 Norm')
     plt.ylabel('Loss')
@@ -67,16 +65,21 @@ def plot_pareto_frontier(task, layer, data, output_path):
     plt.close()
 
 def main():
-    # Load JSON data
-    with open('data/l1_sweep_results.json', 'r') as f:
-        data = json.load(f)
-    
-    # Process each task:layer combination
-    for key, value in data.items():
-        task, layer = key.split(':')
-        output_path = Path(f'data/tvc_tuning/{task}_{layer}.png')
-        plot_pareto_frontier(task, layer, value, output_path)
-        print(f"Generated plot for {task} - Layer {layer}")
+    for postfix in ("phi", "gemma"):
+        try:
+            # Load JSON data
+            with open(f'data/l1_sweep_results_{postfix}.json', 'r') as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            print("Warning: JSON file not found:", postfix)
+            continue
+        
+        # Process each task:layer combination
+        for key, value in data.items():
+            task, layer = key.split(':')
+            output_path = Path(f'data/tvc_tuning_{postfix}/{task}_{layer}.png')
+            plot_pareto_frontier(task, layer, value, output_path)
+            print(f"Generated plot for {task} - Layer {layer}")
 
 if __name__ == "__main__":
     main()

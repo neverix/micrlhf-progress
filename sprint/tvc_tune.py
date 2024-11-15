@@ -256,6 +256,6 @@ for task in tqdm(task_names):
             ))
 
             print("L0:", l0, "Loss:", loss, "Steps:", steps, "Train loss", t_loss)
-            sweep_results[key][l1_coeff] = (l0, loss, t_loss, steps) 
+            sweep_results[key]["FS"][l1_coeff] = loss
         print(sweep_results)
         json.dump(sweep_results, open(save_to, "w"))
