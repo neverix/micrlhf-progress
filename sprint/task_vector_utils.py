@@ -547,8 +547,9 @@ class FeatureSearch:
         min_loss = 1e9
         early_stopping_counter = 0
 
-        for _ in (bar := trange(self.iterations)):
+        for step_n in (bar := trange(self.iterations)):
             loss, weights, opt_state, metrics = self.train_step(weights, opt_state, optimizer)
+            metrics["step"] = step_n
 
             if metrics["l0"] < min_loss:
                 min_loss = metrics["l0"]

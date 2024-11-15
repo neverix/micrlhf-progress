@@ -132,61 +132,6 @@ seed = 10
 layer = 12
 n_shot = 16
 
-task = "antonyms"
-
-pairs = list(tasks[task].items())
-
-runner = ICLRunner(task, pairs, batch_size=batch_size*3, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt)
-
-
-# In[ ]:
-
-
-tokenized = runner.get_tokens([
-        x[:n_shot] for x in runner.train_pairs
-    ], tokenizer)
-
-inputs = tokenized_to_inputs(**tokenized)
-train_tokens = tokenized["input_ids"]
-
-_, all_resids = get_resids_call(inputs)
-
-tokenized = runner.get_tokens(runner.eval_pairs, tokenizer)
-inputs = tokenized_to_inputs(**tokenized)
-tokens = tokenized["input_ids"]
-
-logits = llama(inputs)
-
-
-sae = get_nev_it_sae_suite(layer)
-
-resids = all_resids[layer].value.unwrap(
-    "batch", "seq", "embedding"
-)
-
-
-# In[ ]:
-
-
-_, encoded, _ = sae_encode(sae, resids)
-
-
-# # In[ ]:
-
-
-# activations = encoded[:, :, 11618]
-
-
-# # In[ ]:
-
-
-# import plotly.express as px
-
-# px.imshow(activations, aspect="auto")
-
-
-# In[ ]:
-
 
 from collections import defaultdict
 
@@ -272,7 +217,7 @@ for task in tqdm(task_names):
         )
         
         key = f"{task}:{layer}"
-        sweep_results[key]["TV"][0] = (rtv.size, recon_loss)
+        sweep_results[key]["TV"][0] = (rtv.size, float(recon_loss))
 
         for k_tv in k_tvs:
             _, gtv = grad_pursuit(tv, sae["W_dec"], k_tv)
@@ -295,8 +240,22 @@ for task in tqdm(task_names):
                                batch_size=24, iterations=1000, prompt=prompt,
                                l1_coeff=jnp.array(l1_coeff), n_batches=1, lr=0.04)
 
-            _, metrics = fs.find_weights()
-            l0, loss = metrics["l0"], float(metrics["loss"])
-            print("L0:", l0, "Loss:", loss)
-            sweep_results[key][l1_coeff] = (l0, loss)
+            w, metrics = fs.find_weights()
+            l0, t_loss, steps = int(metrics["l0"]), float(metrics["loss"]), int(metrics["step"])
+
+            _, _, recon = sae_encode(sae, None, pre_relu=w)
+        
+            recon = recon.astype('bfloat16')
+
+            add_act = make_act_adder(llama, recon, tokens, layer, length=1, shift= 0, sep=sep)
+
+            logits = add_act(inputs)
+
+            loss = float(logprob_loss(
+                logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
+            ))
+
+            print("L0:", l0, "Loss:", loss, "Steps:", steps, "Train loss", t_loss)
+            sweep_results[key][l1_coeff] = (l0, loss, t_loss, steps) 
+        print(sweep_results)
         json.dump(sweep_results, open(save_to, "w"))
