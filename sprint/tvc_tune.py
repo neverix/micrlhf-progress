@@ -269,7 +269,8 @@ for task in tqdm(task_names):
             logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
         )
         
-        sweep_results[(task, layer)]["TV"][0] = (rtv.size, recon_loss)
+        key = f"{task}:{layer}"
+        sweep_results[key]["TV"][0] = (rtv.size, recon_loss)
 
         for k_tv in k_tvs:
             _, gtv = grad_pursuit(tv, sae["W_dec"], k_tv)
@@ -282,7 +283,7 @@ for task in tqdm(task_names):
                 logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
             )
             
-            sweep_results[(task, layer)]["ITO"][k_tv] = (k_tv, float(ito_loss))
+            sweep_results[key]["ITO"][k_tv] = (k_tv, float(ito_loss))
 
         for l1_coeff in l1_coeffs:
             print("L1 coefficient:", l1_coeff)
@@ -295,5 +296,5 @@ for task in tqdm(task_names):
             _, metrics = fs.find_weights()
             l0, loss = metrics["l0"], float(metrics["loss"])
             print("L0:", l0, "Loss:", loss)
-            sweep_results[f"{task}:{layer}"][l1_coeff] = (l0, loss)
+            sweep_results[key][l1_coeff] = (l0, loss)
         json.dump(sweep_results, open("data/l1_sweep_results.json", "w"))
