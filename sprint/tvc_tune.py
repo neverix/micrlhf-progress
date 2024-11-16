@@ -119,7 +119,7 @@ task_names = [x for x in tasks]
 n_seeds = 10
 
 # n_few_shots, batch_size, max_seq_len = 64, 64, 512
-n_few_shots, batch_size, max_seq_len = 16, 16, 128
+n_few_shots, batch_size, max_seq_len = 16, 16, 128 if not use_phi else 256
 
 prompt = "Follow the pattern:\n{}"
 if use_phi:

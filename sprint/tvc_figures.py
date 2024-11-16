@@ -1,6 +1,7 @@
 import json
 import matplotlib.pyplot as plt
 import numpy as np
+from glob import glob
 import os
 from pathlib import Path
 
@@ -67,14 +68,11 @@ def plot_pareto_frontier(task, layer, data, output_path):
     plt.close()
 
 def main():
-    for postfix in ("phi", "gemma"):
-        try:
-            # Load JSON data
-            with open(f'data/l1_sweep_results_{postfix}.json', 'r') as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            print("Warning: JSON file not found:", postfix)
-            continue
+    for candidate in glob('data/l1_sweep_results_*.json'):
+        # Load JSON data
+        with open(candidate, 'r') as f:
+            data = json.load(f)
+        postfix = Path(candidate).stem.split('_')[-1]
         
         # Process each task:layer combination
         for key, value in data.items():
