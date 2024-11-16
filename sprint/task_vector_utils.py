@@ -378,9 +378,6 @@ class ICLRunner:
         # tokenized = tokenizer(prompts, padding="longest", return_tensors="np")
         
         tokenized = tokenizer(prompts, padding="max_length", return_tensors="np", max_length=self.max_seq_len, truncation=False)
-        if len(tokenized["input_ids"].shape) < 2:
-            tokenized = tokenizer.batch_encode_plus(prompts, padding="max_length", return_tensors="np", max_length=self.max_seq_len, truncation=True)
-            tokenized["input_ids"] = tokenized["input_ids"].astype(np.int64)
 
         assert tokenized["input_ids"].shape[1] <= self.max_seq_len, "Prompt too long for model."
 

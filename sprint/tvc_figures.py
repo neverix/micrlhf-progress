@@ -68,11 +68,14 @@ def plot_pareto_frontier(task, layer, data, output_path):
     plt.close()
 
 def main():
+    if not os.path.exists("data"):
+        os.chdir("..")
     for candidate in glob('data/l1_sweep_results_*.json'):
+        print("Processing", candidate)
         # Load JSON data
         with open(candidate, 'r') as f:
             data = json.load(f)
-        postfix = Path(candidate).stem.split('_')[-1]
+        postfix = Path(candidate).stem.split('results_')[-1]
         
         # Process each task:layer combination
         for key, value in data.items():
