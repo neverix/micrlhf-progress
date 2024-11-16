@@ -35,11 +35,16 @@ import sys
 
 
 use_phi = sys.argv[1:2] == ["phi"]
+use_g2 = sys.argv[1:2] == ["g2"]
+big_g2 = len(sys.argv) > 2
 
 from micrlhf.llama import LlamaTransformer
 if use_phi:
     print("Using Phi")
     llama = LlamaTransformer.from_pretrained("models/phi-3-16.gguf", load_eager=True)
+elif use_g2:
+    print("Using Gemma 2")
+    llama = LlamaTransformer.from_pretrained("models/gemma-2-2b-it.gguf", from_type="gemma2", load_eager=True)
 else:
     print("Using Gemma")
     llama = LlamaTransformer.from_pretrained("models/gemma-2b-it.gguf", from_type="gemma", load_eager=True)
@@ -50,6 +55,8 @@ import jax
 
 if use_phi:
     tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
+elif use_g2:
+    tokenizer = AutoTokenizer.from_pretrained("alpindale/gemma-2b")
 else:
     tokenizer = AutoTokenizer.from_pretrained("alpindale/gemma-2b")
 tokenizer.padding_side = "right"
@@ -93,11 +100,13 @@ from micrlhf.utils.load_sae import sae_encode
 
 from safetensors import safe_open
 
-from micrlhf.utils.load_sae import get_nev_it_sae_suite
+from micrlhf.utils.load_sae import get_nev_it_sae_suite, get_sae, get_dm_res_sae
 
 
 if use_phi:
     sep = 1599
+elif use_g2:
+    sep = 3978
 else:
     sep = 3978
 pad = 0
@@ -113,6 +122,8 @@ n_seeds = 10
 n_few_shots, batch_size, max_seq_len = 16, 16, 128
 
 prompt = "Follow the pattern:\n{}"
+if use_phi:
+    prompt = "<|user|>\n" + prompt
 
 
 from sprint.task_vector_utils import ICLRunner, logprob_loss, get_tv, make_act_adder, weights_to_resid
@@ -142,14 +153,16 @@ seed = 10
 
 if use_phi:
     layers = [16]
+elif use_g2:
+    layers = [16]
 else:
     layers = [12]
 
 sweep_results = defaultdict(lambda: defaultdict(dict))
-l1_coeffs = [1e-5, 1e-4, 1e-3, 5e-2, 1e-1]
+l1_coeffs = [1e-5, 1e-4, 1e-3, 1e-2, 2.5e-2, 5e-2, 1e-1]
 k_tvs = [5, 10, 20, 30, 40, 50, 100]
 
-save_to = f"data/l1_sweep_results_{'phi' if use_phi else 'gemma'}.json"
+save_to = f"data/l1_sweep_results_{'phi' if use_phi else 'gemma2' if use_g2 else 'gemma'}{'_big' if big_g2 else ''}.json"
 
 # layer = 12
 for task in tqdm(task_names):
@@ -159,7 +172,8 @@ for task in tqdm(task_names):
     if task.startswith("algo"):
         n_shot = 16
 
-    runner = ICLRunner(task, pairs, batch_size=batch_size*3, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt)
+    runner = ICLRunner(task, pairs, batch_size=batch_size*3, n_shot=n_shot, max_seq_len=max_seq_len,
+                       seed=seed, prompt=prompt)
 
 
     tokenized = runner.get_tokens([
@@ -186,7 +200,12 @@ for task in tqdm(task_names):
     )
 
     for layer in layers:
-        sae = get_nev_it_sae_suite(layer)
+        if use_phi:
+            sae = get_sae(layer)
+        elif use_g2:
+            sae = get_dm_res_sae(layer, load_65k=big_g2)
+        else:
+            sae = get_nev_it_sae_suite(layer)
 
         resids = all_resids[layer].value.unwrap(
             "batch", "seq", "embedding"
@@ -231,6 +250,7 @@ for task in tqdm(task_names):
             )
             
             sweep_results[key]["ITO"][k_tv] = (k_tv, float(ito_loss))
+            print("ITO:", k_tv, ito_loss)
 
         for l1_coeff in l1_coeffs:
             print("L1 coefficient:", l1_coeff)
