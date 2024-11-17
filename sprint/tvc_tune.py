@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# !python tvc_tune.py && python tvc_tune.py phi && python tvc_tune.py g2 && python tvc_tune.py g2 big
+
 # In[ ]:
 
 
@@ -119,7 +121,7 @@ task_names = [x for x in tasks]
 n_seeds = 10
 
 # n_few_shots, batch_size, max_seq_len = 64, 64, 512
-n_few_shots, batch_size, max_seq_len = 16, 16, 128 if not use_phi else 256
+n_few_shots, batch_size, max_seq_len = 16, 16, 128 if not (use_phi or use_g2) else 256
 
 prompt = "Follow the pattern:\n{}"
 if use_phi:
@@ -176,9 +178,13 @@ for task in tqdm(task_names):
                        seed=seed, prompt=prompt)
 
 
-    tokenized = runner.get_tokens([
-        x[:n_shot] for x in runner.train_pairs
-    ], tokenizer)
+    try:
+        tokenized = runner.get_tokens([
+            x[:n_shot] for x in runner.train_pairs
+        ], tokenizer)
+    except AssertionError:
+        print("Warning: Skipping", task)
+        continue
 
     inputs = tokenized_to_inputs(**tokenized)
     train_tokens = tokenized["input_ids"]
@@ -236,7 +242,8 @@ for task in tqdm(task_names):
         )
         
         key = f"{task}:{layer}"
-        sweep_results[key]["TV"][0] = (rtv.size, float(recon_loss))
+        sweep_results[key]["TV"][0] = (rtv.size, float(tv_loss))
+        sweep_results[key]["SAE reconstruction"][0] = ((pr != 0).sum(), float(recon_loss))
 
         for k_tv in k_tvs:
             _, gtv = grad_pursuit(tv, sae["W_dec"], k_tv)
@@ -276,6 +283,6 @@ for task in tqdm(task_names):
             ))
 
             print("L0:", l0, "Loss:", loss, "Steps:", steps, "Train loss", t_loss)
-            sweep_results[key]["FS"][l1_coeff] = (l0, loss)
+            sweep_results[key]["Task vector cleaning"][l1_coeff] = (l0, loss)
         print(sweep_results)
         json.dump(sweep_results, open(save_to, "w"))
