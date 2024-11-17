@@ -146,10 +146,10 @@ def main(task_name, part):
 
             print(f"Metrics for pair ({task_name}, {second_task_name}) collected and saved.")
 
-        del first_runner, circuitizer, first_orig_metric, first_zero_metric, first_ablated_metrics, first_n_nodes_counts
-        del second_runner, second_orig_metric, second_zero_metric, second_ablated_metrics, second_n_nodes_counts
-        del llama, circuitizer
-        gc.collect()
+        # del first_runner, circuitizer, first_orig_metric, first_zero_metric, first_ablated_metrics, first_n_nodes_counts
+        # del second_runner, second_orig_metric, second_zero_metric, second_ablated_metrics, second_n_nodes_counts
+        # del llama, circuitizer
+        # gc.collect()
     # task_pairs_progress.update(1)
 
 from threading import Thread
@@ -160,12 +160,19 @@ def run_in_parallel(task_names, core):
     for task_name in tasks_to_run:
         main(task_name, core)
 
+
 if __name__ == "__main__":
-    os.environ["JAX_TRACEBACK_FILTERING"] = "off"
+    from argparse import ArgumentParser
+    parser = ArgumentParser()
+    parser.add_argument("task_names", type=str)
+    args = parser.parse_args()
 
-    cores = 4
+    print(args.task_names)
 
-    task_lists = [task_names[i::cores] for i in range(cores)]
+    task_lists = [
+        [x] for x in args.task_names.split(",")
+    ]
+    cores = len(task_lists)
 
     threads = [Thread(target=run_in_parallel, args=(task_lists[i], i)) for i in range(cores)]
 
