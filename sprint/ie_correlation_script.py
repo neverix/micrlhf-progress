@@ -1,13 +1,12 @@
 import subprocess
 
-tasks = [
-    
+_tasks = [
  'en_es',
-    'location_continent',
-#  'football_player_position',
+'location_continent',
+ 'football_player_position',
  'location_religion',
  'location_language',
-#  'person_profession',
+ 'person_profession',
  'location_country',
  'country_capital',
  'person_language',
@@ -24,9 +23,32 @@ tasks = [
  'es_en',
  'algo_last',
  'algo_first',
- 'algo_second'][4:]
+ 'algo_second']
+
+tasks = [
+    "antonyms",
+    "en_es",
+    "person_profession",
+    "location_country",
+    "es_en",
+    "singular_plural",
+    "en_fr",
+    "present_simple_past_simple",
+]
+
+tasks = tasks + [x for x in _tasks if x not in tasks]
+
+
+import subprocess
 
 from tqdm.auto import tqdm
 
-for task in tqdm(tasks):
-    subprocess.run(["python", "sprint/run_ie_correlation.py", "--task", task])
+n_parts = 4
+
+batched_task_names = [
+    tasks[i * n_parts : (i + 1) * n_parts] for i in range(len(tasks) // n_parts + 1)
+]
+
+
+for batch in tqdm(batched_task_names):
+    subprocess.run(["python", "sprint/run_ie_correlation.py", ",".join(batch)])

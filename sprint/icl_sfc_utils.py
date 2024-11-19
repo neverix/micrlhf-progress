@@ -141,7 +141,7 @@ sep = 3978
 newline = 108
 pad = 0
 
-def metric_fn(logits, resids, tokens, use_softmax=False , do_reduce=True):
+def metric_fn(logits, resids, tokens, use_softmax=True , do_reduce=True):
     return logprob_loss_all(logits, tokens, sep=sep, pad=pad, use_softmax=use_softmax, do_reduce=do_reduce)
     # return logprob_loss(logits, tokens, sep=sep, pad_token=pad, n_first=2, use_softmax=use_softmax)
 
@@ -728,7 +728,7 @@ class Circuitizer(eqx.Module):
             tokens = self.train_tokens
 
         ablated_logits = llama_ablated(inputs)
-        return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, tokens, use_softmax=False, do_reduce=do_reduce)
+        return metric_fn(ablated_logits.unwrap("batch", "seq", "vocabulary"), None, tokens, use_softmax=True, do_reduce=do_reduce)
 
     def mask_ie(self, ie, threshold, topk=None, inverse=False, token_types=None, do_abs=True, average_over_positions=True, token_prefix=None, features_to_mask=None):
         out_masks = {}

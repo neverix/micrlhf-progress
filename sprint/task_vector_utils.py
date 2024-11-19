@@ -219,7 +219,7 @@ class ICLDataset:
     def __getitem__(self, idx: int):
         return self.seqs[idx]
 
-def logprob_loss(logits, tokens, sep=1599, pad_token=32000, n_first=None, shift=None):
+def logprob_loss(logits, tokens, sep=1599, pad_token=32000, n_first=None, shift=None, do_ppl=False):
     logits = jax.nn.log_softmax(logits)
 
     logits = logits[:, :-1]
@@ -248,7 +248,10 @@ def logprob_loss(logits, tokens, sep=1599, pad_token=32000, n_first=None, shift=
 
     logits = logits * mask
 
-    return -logits.sum(axis=-1).mean(axis=-1)
+    if not do_ppl:
+        return -logits.sum(axis=-1).mean(axis=-1)
+    else:
+        return jnp.exp(-logits.sum(axis=-1) / mask.sum(axis=-1)).mean(axis=-1)  
 
 def task_vector_mask(tokens, sep=1599, shift=None):
     mask = tokens == sep
