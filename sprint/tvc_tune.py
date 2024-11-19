@@ -41,7 +41,7 @@ task_names = list(tasks.keys())
 devices = jax.devices("tpu")
 
 # layer = 12
-def main(task, use_phi, use_g2, big_g2, core):
+def main(task_names, use_phi, use_g2, big_g2, core):
     device = devices[core]
     print(device)
     with jax.default_device(device):
@@ -114,10 +114,6 @@ def main(task, use_phi, use_g2, big_g2, core):
             sep = 3978
         pad = 0
 
-
-
-
-        task_names = [x for x in tasks]
         # task_names = ["antonyms"]
         n_seeds = 10
 
@@ -156,126 +152,124 @@ def main(task, use_phi, use_g2, big_g2, core):
 
         save_to = f"data/l1_sweep_results_{'phi' if use_phi else 'gemma2' if use_g2 else 'gemma'}{'_big' if big_g2 else ''}_{core}.json"
 
+        for task in tqdm(task_names):
+            pairs = list(tasks[task].items())
+            n_shot = n_few_shots-1
+            if task.startswith("algo"):
+                n_shot = 16
+
+            runner = ICLRunner(task, pairs, batch_size=batch_size*1, n_shot=n_shot, max_seq_len=max_seq_len,
+                            seed=seed, prompt=prompt)
 
 
-        pairs = list(tasks[task].items())
+            try:
+                tokenized = runner.get_tokens([
+                    x[:n_shot] for x in runner.train_pairs
+                ], tokenizer)
+            except AssertionError:
+                print("Warning: Skipping", task)
+                return
 
-        n_shot = n_few_shots-1
-        if task.startswith("algo"):
-            n_shot = 16
+            inputs = tokenized_to_inputs(**tokenized)
+            train_tokens = tokenized["input_ids"]
 
-        runner = ICLRunner(task, pairs, batch_size=batch_size*1, n_shot=n_shot, max_seq_len=max_seq_len,
-                        seed=seed, prompt=prompt)
+            _, all_resids = get_resids_call(inputs)
 
+            tokenized = runner.get_tokens(runner.eval_pairs, tokenizer)
+            inputs = tokenized_to_inputs(**tokenized)
+            tokens = tokenized["input_ids"]
 
-        try:
-            tokenized = runner.get_tokens([
-                x[:n_shot] for x in runner.train_pairs
-            ], tokenizer)
-        except AssertionError:
-            print("Warning: Skipping", task)
-            return
-
-        inputs = tokenized_to_inputs(**tokenized)
-        train_tokens = tokenized["input_ids"]
-
-        _, all_resids = get_resids_call(inputs)
-
-        tokenized = runner.get_tokens(runner.eval_pairs, tokenizer)
-        inputs = tokenized_to_inputs(**tokenized)
-        tokens = tokenized["input_ids"]
-
-        logits = llama(inputs)
-        
-        zero_loss = logprob_loss(
-            logits.unwrap("batch", "seq", "vocabulary"), tokens, shift= 0, n_first=2, sep=sep, pad_token=0
-        )
-
-        print(
-            f"Zero: {task}, Loss: {zero_loss}"  
-        )
-
-        for layer in layers:
-            if use_phi:
-                sae = get_sae(layer)
-            elif use_g2:
-                sae = get_dm_res_sae(layer, load_65k=big_g2)
-            else:
-                sae = get_nev_it_sae_suite(layer)
-
-            resids = all_resids[layer].value.unwrap(
-                "batch", "seq", "embedding"
-            )
-
-            tv = get_tv(resids, train_tokens, shift = 0, sep=sep)
-
-            add_act = make_act_adder(llama, tv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
-
-            logits = add_act(inputs)
-
-            tv_loss = logprob_loss(
-                logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
+            logits = llama(inputs)
+            
+            zero_loss = logprob_loss(
+                logits.unwrap("batch", "seq", "vocabulary"), tokens, shift= 0, n_first=2, sep=sep, pad_token=0
             )
 
             print(
-                f"TV: {task}, L: {layer}, Loss: {tv_loss}"  
+                f"Zero: {task}, Loss: {zero_loss}"  
             )
-            
-            pr, _, rtv = sae_encode(sae, tv)
 
-            add_act = make_act_adder(llama, rtv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
+            for layer in layers:
+                if use_phi:
+                    sae = get_sae(layer)
+                elif use_g2:
+                    sae = get_dm_res_sae(layer, load_65k=big_g2)
+                else:
+                    sae = get_nev_it_sae_suite(layer)
 
-            logits = add_act(inputs)
+                resids = all_resids[layer].value.unwrap(
+                    "batch", "seq", "embedding"
+                )
 
-            recon_loss = logprob_loss(
-                logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
-            )
-            
-            key = f"{task}:{layer}"
-            sweep_results[key]["TV"][0] = (rtv.size, float(tv_loss))
-            sweep_results[key]["SAE reconstruction"][0] = ((pr != 0).sum(), float(recon_loss))
+                tv = get_tv(resids, train_tokens, shift = 0, sep=sep)
 
-            for k_tv in k_tvs:
-                _, gtv = grad_pursuit(tv, sae["W_dec"], k_tv)
-
-                add_act = make_act_adder(llama, gtv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
+                add_act = make_act_adder(llama, tv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
 
                 logits = add_act(inputs)
 
-                ito_loss = logprob_loss(
+                tv_loss = logprob_loss(
+                    logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
+                )
+
+                print(
+                    f"TV: {task}, L: {layer}, Loss: {tv_loss}"  
+                )
+                
+                pr, post_r, rtv = sae_encode(sae, tv)
+
+                add_act = make_act_adder(llama, rtv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
+
+                logits = add_act(inputs)
+
+                recon_loss = logprob_loss(
                     logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
                 )
                 
-                sweep_results[key]["ITO"][k_tv] = (k_tv, float(ito_loss))
-                print("ITO:", k_tv, ito_loss)
+                key = f"{task}:{layer}"
+                sweep_results[key]["TV"][0] = (rtv.size, float(tv_loss))
+                sweep_results[key]["SAE reconstruction"][0] = (int((post_r != 0).sum()), float(recon_loss))
 
-            for l1_coeff in l1_coeffs:
-                print("L1 coefficient:", l1_coeff)
-                fs = FeatureSearch(task, pairs, layer, llama, tokenizer, n_shot=1,
-                                seed=seed+100, init_w=pr, early_stopping_steps=50,
-                                n_first=2, sep=sep, pad_token=0, sae_v=8, sae=sae,
-                                batch_size=16, iterations=1000, prompt=prompt,
-                                l1_coeff=jnp.array(l1_coeff), n_batches=1, lr=0.02)
+                for k_tv in k_tvs:
+                    _, gtv = grad_pursuit(tv, sae["W_dec"], k_tv)
 
-                w, metrics = fs.find_weights()
-                l0, t_loss, steps = int(metrics["l0"]), float(metrics["loss"]), int(metrics["step"])
+                    add_act = make_act_adder(llama, gtv.astype('bfloat16'), tokens, layer, length=1, shift= 0, sep=sep)
 
-                _, _, recon = sae_encode(sae, None, pre_relu=w)
-            
-                recon = recon.astype('bfloat16')
+                    logits = add_act(inputs)
 
-                add_act = make_act_adder(llama, recon, tokens, layer, length=1, shift= 0, sep=sep)
+                    ito_loss = logprob_loss(
+                        logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
+                    )
+                    
+                    sweep_results[key]["ITO"][k_tv] = (k_tv, float(ito_loss))
+                    print("ITO:", k_tv, ito_loss)
 
-                logits = add_act(inputs)
+                for l1_coeff in l1_coeffs:
+                    print("L1 coefficient:", l1_coeff)
+                    fs = FeatureSearch(task, pairs, layer, llama, tokenizer, n_shot=1,
+                                    seed=seed+100, init_w=pr, early_stopping_steps=50,
+                                    n_first=2, sep=sep, pad_token=0, sae_v=8, sae=sae,
+                                    batch_size=12, iterations=1000, prompt=prompt,
+                                    l1_coeff=jnp.array(l1_coeff), n_batches=1, lr=0.02)
 
-                loss = float(logprob_loss(
-                    logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
-                ))
+                    w, metrics = fs.find_weights()
+                    l0, t_loss, steps = int(metrics["l0"]), float(metrics["loss"]), int(metrics["step"])
 
-                print("L0:", l0, "Loss:", loss, "Steps:", steps, "Train loss", t_loss)
-                sweep_results[key]["Task vector cleaning"][l1_coeff] = (l0, loss)
-            print(sweep_results)
-            json.dump(sweep_results, open(save_to, "w"))
+                    _, _, recon = sae_encode(sae, None, pre_relu=w)
+                
+                    recon = recon.astype('bfloat16')
+
+                    add_act = make_act_adder(llama, recon, tokens, layer, length=1, shift= 0, sep=sep)
+
+                    logits = add_act(inputs)
+
+                    loss = float(logprob_loss(
+                        logits.unwrap("batch", "seq", "vocabulary"), tokens, shift=0, n_first=2, sep=sep, pad_token=0
+                    ))
+
+                    print("L0:", l0, "Loss:", loss, "Steps:", steps, "Train loss", t_loss)
+                    sweep_results[key]["Task vector cleaning"][l1_coeff] = (l0, loss)
+                print(sweep_results)
+                json.dump(sweep_results, open(save_to, "w"))
 
 
 from threading import Thread
@@ -283,8 +277,9 @@ from threading import Thread
 def run_in_parallel(task_names, use_phi, use_g2, big_g2, core):
     # Limit to the number of cores if task_names exceed
     tasks_to_run = task_names
-    for task_name in tasks_to_run:
-        main(task_name, use_phi, use_g2, big_g2, core)
+    main(
+        tasks_to_run, use_phi, use_g2, big_g2, core
+    )
 
 
 if __name__ == "__main__":
@@ -296,8 +291,8 @@ if __name__ == "__main__":
     parser.add_argument("--big", action="store_true")
     args = parser.parse_args()
 
-    use_phi = args.model == ["phi"]
-    use_g2 = args.model == ["g2"]
+    use_phi = args.model == "phi"
+    use_g2 = args.model == "g2"
     big_g2 = args.big
 
     cores = int(args.cores)
