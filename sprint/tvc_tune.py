@@ -203,8 +203,6 @@ def main(task_names, use_phi, use_g2, use_g2b, big_g2, core):
             for layer in layers:
                 key = f"{task}:{layer}"
                 sweep_results[key]["Zero"][0] = (0, float(zero_loss))
-                json.dump(sweep_results, open(save_to, "w"))
-                continue
             
                 if use_phi:
                     sae = get_sae(layer)
