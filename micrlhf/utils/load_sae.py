@@ -79,7 +79,7 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
 
     return sae_weights
 
-def get_dm_res_sae(layer, load_65k=False, type="res"):
+def get_dm_res_sae(layer, load_65k=False, type="res", sparsity=None):
     fs = HfFileSystem()
     key = f"dm_gemma2_2b_{type}_{layer}"
     if key in sae_cache:
@@ -99,7 +99,14 @@ def get_dm_res_sae(layer, load_65k=False, type="res"):
     l0_versions = sorted(
         l0_versions, key=lambda x: int(x.split("average_l0_")[1])
     )
-    url = l0_versions[2]
+
+    if sparsity is None:
+        if load_65k:
+            sparsity = 3
+        else:
+            sparsity = 2
+
+    url = l0_versions[sparsity]
     url = url + "/params.npz"
 
     # else:
@@ -107,9 +114,11 @@ def get_dm_res_sae(layer, load_65k=False, type="res"):
 
     os.makedirs("models/sae", exist_ok=True)
     if load_65k:
-        fname = f"models/sae/dm_gemma2_2b_{type}_{layer}_65k.npz"
+        fname = f"models/sae/dm_gemma2_2b_{type}_{layer}_{sparsity}_65k.npz"
     else:
-        fname = f"models/sae/dm_gemma2_2b_{type}_{layer}.npz"
+        fname = f"models/sae/dm_gemma2_2b_{type}_{layer}_{sparsity}.npz"
+
+    print(fname)
 
     if not os.path.exists(fname):
         with open(fname, "wb") as f:

@@ -45,7 +45,7 @@ def main(task_name, part):
         first_task = tasks[task_name]
         first_pairs = list(first_task.items())
         prompt = "Follow the pattern:\n{}"
-        layers = list(range(8, 18))
+        layers = list(range(10, 18))
         n_few_shot = n_shot
         if task_name.startswith("algo"):
             n_few_shot = 8
@@ -56,10 +56,10 @@ def main(task_name, part):
 
         # Calculate original and zero metrics for the first task
         first_orig_metric = circuitizer.ablated_metric(llama).tolist()
-        first_zero_metric = circuitizer.run_ablated_metrics([100000], layers=layers)[0][0]
+        first_zero_metric = circuitizer.run_ablated_metrics([0], layers=layers, inverse=True, do_abs=False)[0][0]
 
         # Log thresholds and metrics settings
-        thresholds = np.logspace(-8, 0, 300)
+        thresholds = np.logspace(-3, 0.5, 300)
         topks = [4, 6, 12, 16, 24, 32]
 
         inverse = True
@@ -109,7 +109,7 @@ def main(task_name, part):
 
             # 2. Metrics for second_runner on second_task, while ablating using first_runner
             second_orig_metric = circuitizer.ablated_metric(llama, runner=(second_runner, tokenizer)).tolist()
-            second_zero_metric = circuitizer.run_ablated_metrics([100000], layers=layers, runner=(second_runner, tokenizer), prompt=prompt)[0][0]
+            second_zero_metric = circuitizer.run_ablated_metrics([0], layers=layers, runner=(second_runner, tokenizer), inverse=True, prompt=prompt)[0][0]
 
             second_ablated_metrics, second_n_nodes_counts = circuitizer.run_ablated_metrics(
                 thresholds, 
@@ -137,7 +137,7 @@ def main(task_name, part):
                 "layers": layers
             }
 
-            output_filepath = f"task_pair_metrics_fixed_{part}.jsonl"
+            output_filepath = f"task_pair_metrics_fixed_zero_fixed_{part}.jsonl"
 
             # Save both results in the JSON Lines file
             with open(output_filepath, 'a') as jsonl_file:
