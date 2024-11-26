@@ -79,17 +79,18 @@ def get_nev_it_sae_suite(layer: int = 12, label = "residual", revision = 1, idx=
 
     return sae_weights
 
-def get_dm_res_sae(layer, load_65k=False, type="res"):
+def get_dm_res_sae(layer, load_65k=False, type="res", nine_b=False):
     fs = HfFileSystem()
-    key = f"dm_gemma2_2b_{type}_{layer}"
+    b_key = "2b" if not nine_b else "9b"
+    key = f"dm_gemma2_{b_key}_{type}_{layer}"
     if key in sae_cache:
         return sae_cache[key]
 
     width = 65 if load_65k else 16
 
-    rep_url = f"google/gemma-scope-2b-pt-{type}/layer_{layer}/width_{width}k/*"
+    rep_url = f"google/gemma-scope-{b_key}-pt-{type}/layer_{layer}/width_{width}k/*"
     if type == "transcoder":
-        rep_url = f"google/gemma-scope-2b-pt-{type}/layer_{layer}/width_{width}k/*"
+        rep_url = f"google/gemma-scope-{b_key}-pt-{type}/layer_{layer}/width_{width}k/*"
 
     # if type != "res":
     l0_versions = list(
@@ -97,9 +98,9 @@ def get_dm_res_sae(layer, load_65k=False, type="res"):
     )
 
     l0_versions = sorted(
-        l0_versions, key=lambda x: int(x.split("average_l0_")[1])
+        l0_versions, key=lambda x: abs(100 - int(x.split("average_l0_")[1]))
     )
-    url = l0_versions[2]
+    url = l0_versions[0]
     url = url + "/params.npz"
 
     # else:

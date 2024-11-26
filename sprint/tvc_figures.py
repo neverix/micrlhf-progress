@@ -30,9 +30,11 @@ def plot_pareto_frontier(task, layer, data, output_path):
         l0_values = []
         loss_values = []
         print(technique, param_data)
-        for param, value_data in param_data.items():
-            l0_values.append(value_data[0])
-            loss_values.append(value_data[1])
+        for param, (l0, l) in param_data.items():
+            if l0 == 0:
+                l0 = 1
+            l0_values.append(l0)
+            loss_values.append(l)
         
         # Convert to numpy arrays for efficient computation
         points = np.column_stack((l0_values, loss_values))

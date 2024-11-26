@@ -1,0 +1,1 @@
+time bash all_tvc_tune.sh 2> ../data/tvc_log.txt > ../data/tvc_log.txt
