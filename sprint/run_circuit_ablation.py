@@ -5,7 +5,7 @@ from sprint.task_vector_utils import load_tasks
 tasks = load_tasks()
 
 
-task_names = list(tasks.keys())
+task_names = list(tasks.keys())[:12]
 
 import subprocess
 

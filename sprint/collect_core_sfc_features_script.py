@@ -1,7 +1,31 @@
 import subprocess
 
-tasks = ["antonyms", "en_es", "es_en", "present_simple_gerund", "country_capital", "location_religion", "person_profession", "en_fr", "en_it", "fr_en", "algo_first", "algo_last"][-2:]
+
+import os
+from sprint.task_vector_utils import load_tasks
+
+# Load tasks
+tasks = load_tasks()
 
 
-for task in tasks:
-    subprocess.run(["python", "sprint/collect_core_sfc_features.py", "--task", task])
+task_names = list(tasks.keys())
+
+import subprocess
+
+from tqdm.auto import tqdm
+
+n_parts = 4
+
+batched_task_names = [
+    task_names[i * n_parts : (i + 1) * n_parts] for i in range(len(task_names) // n_parts + 1)
+]
+
+
+for batch in tqdm(batched_task_names):
+    subprocess.run(
+        [
+            "python",
+            "sprint/collect_core_sfc_features.py",
+            ",".join(batch),
+        ]
+    )

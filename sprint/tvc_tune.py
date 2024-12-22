@@ -261,7 +261,7 @@ def main(task_names, use_phi, use_g2, use_g2b, big_g2, core):
                 for l1_coeff in l1_coeffs:
                     print("L1 coefficient:", l1_coeff)
                     fs = FeatureSearch(task, pairs, layer, llama, tokenizer, n_shot=1,
-                                    seed=seed+100, init_w=pr, early_stopping_steps=50,
+                                    seed=seed+100, init_w=pr, early_stopping_steps=150      ,
                                     n_first=2, sep=sep, pad_token=0, sae_v=8, sae=sae,
                                     batch_size=12, iterations=1000, prompt=prompt,
                                     l1_coeff=jnp.array(l1_coeff), n_batches=1, lr=0.05)
