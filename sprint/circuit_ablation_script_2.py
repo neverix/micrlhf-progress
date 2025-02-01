@@ -34,7 +34,7 @@ task_names = list(tasks.keys())
 devices = jax.devices("tpu")
 
 def main(task_name, part):
-    output_filepath = f"task_faithfulness_metrics_new_zero_fixed_{part}.jsonl"
+    output_filepath = f"task_faithfulness_metrics_use_sm_later_no_prompt_inverse_{part}.jsonl"
     device = devices[part]
     print(device)
     with jax.default_device(device):
@@ -61,55 +61,69 @@ def main(task_name, part):
         first_runner = ICLRunner(task_name, first_pairs, batch_size=batch_size, n_shot=n_few_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt, use_same_examples=False, use_same_target=False)
         circuitizer = Circuitizer(llama, tokenizer, first_runner, layers, prompt=prompt)
 
-        # Calculate original and zero metrics for the first task
-        first_orig_metric = circuitizer.ablated_metric(llama).tolist()
-        first_zero_metric = circuitizer.run_ablated_metrics([0], layers=layers, inverse=True, do_abs=False)[0][0]
+        second_task_name = task_name
 
-        # Log thresholds and metrics settings
-        thresholds = np.logspace(-3, 0.5, 300)
-        topks = [4, 6, 12, 16, 24, 32]
+        second_task = tasks[second_task_name]
 
-        inverse = True
-        do_abs = False
-        mean_ablate = False
+        # second_task = {
+        #     k:v for k,v in second_task.items() if check_if_single_token(k) and check_if_single_token(v)
+        # }
+
+        second_pairs = list(second_task.items())
+
+        second_runner = ICLRunner(task_name, second_pairs, batch_size=batch_size, n_shot=n_shot, max_seq_len=max_seq_len, seed=seed + 101, prompt=prompt, use_same_examples=False, use_same_target=False)
+
         average_over_positions = True
 
-        # 1. Metrics for first_runner on first_task, while ablating using second_runner
-        first_ablated_metrics, first_n_nodes_counts = circuitizer.run_ablated_metrics(
-            thresholds, 
-            inverse=inverse, 
-            do_abs=do_abs, 
-            mean_ablate=mean_ablate, 
-            average_over_positions=average_over_positions,
-            token_prefix=None, 
-            layers=layers,
-        )
-        first_faithfullness = (np.array(first_ablated_metrics) - first_zero_metric) / (first_orig_metric - first_zero_metric)
+        # Calculate original and zero metrics for the first task
+        first_orig_metric = circuitizer.ablated_metric(llama, runner=(second_runner, tokenizer)).tolist()
+        # first_zero_metric = circuitizer.run_ablated_metrics([10000], layers=layers, inverse=False, average_over_positions=average_over_positions, runner=(second_runner, tokenizer), prompt=prompt)[0][0]
+        first_zero_metric = circuitizer.run_ablated_metrics([0], layers=layers, runner=(second_runner, tokenizer), inverse=True, prompt=prompt)[0][0]
 
-        # Save metrics data for first runner
-        first_metrics_data = {
-            "task": task_name,
-            "inverse": inverse,
-            "orig_metric": first_orig_metric,
-            "zero_metric": first_zero_metric,
-            "thresholds": thresholds.tolist(),
-            "n_nodes_counts": first_n_nodes_counts,
-            "ablated_metrics": first_ablated_metrics,
-            "faithfullness": first_faithfullness.tolist(),
-            "layers": layers
-        }
+        # Log thresholds and metrics settings
+        thresholds = np.logspace(-10, 0, 400)
+        topks = [4, 6, 12, 16, 24, 32]
 
-            # Save both results in the JSON Lines file
-        with open(output_filepath, 'a') as jsonl_file:
-            jsonl_file.write(json.dumps(first_metrics_data) + "\n")
+        # inverse = True
+        # do_abs = False
+        # mean_ablate = False
+        # average_over_positions = True
+
+        # # 1. Metrics for first_runner on first_task, while ablating using second_runner
+        # first_ablated_metrics, first_n_nodes_counts = circuitizer.run_ablated_metrics(
+        #     thresholds, 
+        #     inverse=inverse, 
+        #     do_abs=do_abs, 
+        #     mean_ablate=mean_ablate, 
+        #     average_over_positions=average_over_positions,
+        #     token_prefix=None, 
+        #     layers=layers,
+        # )
+        # first_faithfullness = (np.array(first_ablated_metrics) - first_zero_metric) / (first_orig_metric - first_zero_metric)
+
+        # # Save metrics data for first runner
+        # first_metrics_data = {
+        #     "task": task_name,
+        #     "inverse": inverse,
+        #     "orig_metric": first_orig_metric,
+        #     "zero_metric": first_zero_metric,
+        #     "thresholds": thresholds.tolist(),
+        #     "n_nodes_counts": first_n_nodes_counts,
+        #     "ablated_metrics": first_ablated_metrics,
+        #     "faithfullness": first_faithfullness.tolist(),
+        #     "layers": layers
+        # }
+
+        #     # Save both results in the JSON Lines file
+        # with open(output_filepath, 'a') as jsonl_file:
+        #     jsonl_file.write(json.dumps(first_metrics_data) + "\n")
 
 
             # task_pairs_progress.update(1)
 
-        inverse = False
+        inverse = True
         do_abs = False
         mean_ablate = False
-        average_over_positions = True
 
         # 1. Metrics for first_runner on first_task, while ablating using second_runner
         first_ablated_metrics, first_n_nodes_counts = circuitizer.run_ablated_metrics(
@@ -120,6 +134,7 @@ def main(task_name, part):
             average_over_positions=average_over_positions,
             token_prefix=None, 
             layers=layers,
+            runner=(second_runner, tokenizer), prompt=prompt
         )
         first_faithfullness = (np.array(first_ablated_metrics) - first_zero_metric) / (first_orig_metric - first_zero_metric)
 

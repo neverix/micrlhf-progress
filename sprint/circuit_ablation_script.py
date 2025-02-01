@@ -57,9 +57,11 @@ def main(task_name, part):
         # Calculate original and zero metrics for the first task
         first_orig_metric = circuitizer.ablated_metric(llama).tolist()
         first_zero_metric = circuitizer.run_ablated_metrics([0], layers=layers, inverse=True, do_abs=False)[0][0]
+        first_only_positive_metric = circuitizer.run_ablated_metrics([0], layers=layers, inverse=False, do_abs=False)[0][0]
+        first_full_zero_metric = circuitizer.run_ablated_metrics([100000], layers=layers, inverse=False, do_abs=False)[0][0]
 
         # Log thresholds and metrics settings
-        thresholds = np.logspace(-3, 0.5, 300)
+        thresholds = np.logspace(-5, 0, 300)
         topks = [4, 6, 12, 16, 24, 32]
 
         inverse = True
@@ -85,6 +87,8 @@ def main(task_name, part):
             "runner": "first_runner",
             "orig_metric": first_orig_metric,
             "zero_metric": first_zero_metric,
+            "only_positive_metric": first_only_positive_metric,
+            "full_zero_metric": first_full_zero_metric,
             "thresholds": thresholds.tolist(),
             "n_nodes_counts": first_n_nodes_counts,
             "ablated_metrics": first_ablated_metrics,
@@ -108,6 +112,7 @@ def main(task_name, part):
             second_runner = ICLRunner(second_task_name, second_pairs, batch_size=batch_size, n_shot=n_few_shot, max_seq_len=max_seq_len, seed=seed, prompt=prompt, use_same_examples=False, use_same_target=False)
 
             # 2. Metrics for second_runner on second_task, while ablating using first_runner
+            # ZERO METRIC SHOULD BE CALCULATED ON THE TASK ITSELF!!!
             second_orig_metric = circuitizer.ablated_metric(llama, runner=(second_runner, tokenizer)).tolist()
             second_zero_metric = circuitizer.run_ablated_metrics([0], layers=layers, runner=(second_runner, tokenizer), inverse=True, prompt=prompt)[0][0]
 
@@ -137,7 +142,7 @@ def main(task_name, part):
                 "layers": layers
             }
 
-            output_filepath = f"task_pair_metrics_fixed_zero_fixed_{part}.jsonl"
+            output_filepath = f"task_pair_metrics_no_sm_{part}.jsonl"
 
             # Save both results in the JSON Lines file
             with open(output_filepath, 'a') as jsonl_file:

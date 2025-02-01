@@ -22,7 +22,7 @@ for batch in tqdm(batched_task_names):
     subprocess.run(
         [
             "python",
-            "sprint/circuit_ablation_script.py",
+            "sprint/circuit_ablation_script_2.py",
             ",".join(batch),
         ]
     )

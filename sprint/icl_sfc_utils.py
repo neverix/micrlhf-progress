@@ -194,7 +194,7 @@ def make_masks(tokenizer, tokens, prompt):
         ("newline", jnp.array(tokens == newline).at[:, :prompt_length].set(False)),
     ]
 
-    for i in range(1, prompt_length):
+    for i in range(3, prompt_length):
         masks.append((f"prompt_{i}", jnp.zeros_like(tokens).at[:, i].set(1).astype(bool)))
 
     remaining_mask = tokens != pad
